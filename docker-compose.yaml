@@ -1,0 +1,38 @@
+# Redis online store for the Feast feature view (make redis-up) and the
+# PostgreSQL rules database (make rules-db-up).
+name: wht-exemption-automation
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "300", "1", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Rules database: rule versions, approvals, audit trail, grant runs.
+  # Start it with: make rules-db-up, then create the schema with make rules-db-init
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wht
+      POSTGRES_PASSWORD: wht
+      POSTGRES_DB: wht_rules
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wht -d wht_rules"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis_data:
+  postgres_data:

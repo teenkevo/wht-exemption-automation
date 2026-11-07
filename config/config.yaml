@@ -1,0 +1,91 @@
+project: wht_exemption
+entity_key: TIN_NO
+event_timestamp: event_timestamp
+# Format of the saved joined table. Features, grant, training, and scores read this table.
+source_format: parquet
+# Format of the seven lake tables. Used only when WHT_MODE=remote.
+lake_format: delta
+# Two exemption cycles per financial year, which starts on 1 July.
+# wht_2026_27_h1 runs 1 July to 31 December 2026 (Q1 and Q2).
+# wht_2026_27_h2 runs 1 January to 30 June 2027 (Q3 and Q4).
+# The run date picks the cycle. WHT_AS_OF=YYYY-MM-DD reruns an earlier date.
+# WHT_CYCLE names a cycle directly. Each cycle only switches catalog rules on
+# or off by code. Rules, their thresholds, and their versions are defined in
+# src/rules_engine/catalog.py.
+checklist:
+  cycles:
+    wht_2026_27_h1:
+      start: 2026-07-01
+      end: 2026-12-31
+      rules:
+        - code: REGISTERED
+          enabled: true
+        - code: EXISTING_TAXPAYER
+          enabled: true
+        - code: NO_OUTSTANDING_LIABILITY
+          enabled: true
+        - code: RETURNS_FILED
+          enabled: true
+        - code: MIN_TAX_COLLECTED
+          enabled: true
+# Where checklist rules, approvals, and the audit trail live. RULES_DB_URL
+# replaces the dsn in a deployment. type: memory replays
+# src/rules_engine/catalog.py without a database, for tests and offline runs.
+rules_store:
+  type: postgres
+  dsn: postgresql://wht:wht@localhost:5432/wht_rules
+load:
+  dedupe_sector: true
+# Lake paths for the seven sources. Read only when WHT_MODE=remote.
+remote_sources:
+  reg: /data/lakehouse/dm_modeled/dim_taxpayer_mst
+  ledger: /data/lakehouse/dm_modeled/fact_ledger
+  payments: /data/lakehouse/dm_modeled/fact_payments
+  efris: /data/lakehouse/dm_modeled/fact_efris_invoice
+  sector: /data/lakehouse/dm_modeled_ura/dim_taxpayer_sector
+  customs: /data/lakehouse/dm_modeled_ura/ft_cstm_decl_hdr
+  returns: /data/lakehouse/dm_modeled_ura/ft_it_returns_filled_ob
+training:
+  seed: 42
+  train_fraction: 0.8
+  negative_ratio: 20
+  serving_model: random_forest
+  strict_features: true
+  max_categorical_cardinality: 60
+  random_forest:
+    num_trees: 100
+    max_depth: 8
+  logistic_regression:
+    reg_param: 0.01
+    max_iter: 50
+  gbt:
+    max_iter: 100
+    max_depth: 5
+    step_size: 0.1
+evaluation:
+  at_k: [500, 1000, 2000, 5000, 10000]
+  group_check_k: 5000
+tiers:
+  high_quantile: 0.999
+  medium_quantile: 0.995
+paths:
+  source: data/delta/wht_base_v1
+  taxpayers: data/delta/wht_base_v1
+  features: data/features
+  feature_plan: artifacts/reports/feature_plan.json
+  feast_registry: data/registry.db
+  grants: data/grants/wht_grants.parquet
+  grant_summary: artifacts/wht_grant_summary.json
+  load_summary: artifacts/wht_load_summary.json
+  models: artifacts/models
+  scores: data/scores/wht_scores.parquet
+  reports: artifacts/reports
+# Online store that make materialize fills. REDIS_URL replaces the connection
+# in a deployment, for example redis.internal:6379,password=...
+online_store:
+  type: redis
+  connection: localhost:6379
+serving:
+  # Model that POST /predict scores with, from paths.models. Empty closes the route.
+  # The grant lookup stays the served decision.
+  model_name: random_forest

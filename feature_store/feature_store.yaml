@@ -1,0 +1,9 @@
+project: wht_exemption
+provider: local
+registry: ../data/registry.db
+online_store:
+  type: redis
+  connection_string: localhost:6379
+entity_key_serialization_version: 3
+offline_store:
+  type: file

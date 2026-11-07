@@ -1,0 +1,37 @@
+[project]
+name = "wht-exemption-automation"
+version = "0.1.0"
+description = "WHT exemption automation: load, grant, ranker, and lookup API"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "pandas>=2.2,<3",
+  "numpy>=1.26,<3",
+  "pyarrow>=16,<22",
+  "pyyaml>=6,<7",
+  "feast[redis]>=0.50,<0.60",
+  "mlflow>=3.0,<4",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "pydantic>=2.7,<3",
+  "pyspark>=3.5,<4",
+  "psycopg[binary]>=3.2,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "httpx>=0.27,<1"]
+delta = ["delta-spark>=3.2,<3.3"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"rules_engine.db" = ["schema.sql"]
