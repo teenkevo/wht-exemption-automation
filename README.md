@@ -69,12 +69,12 @@ A rule names a feature, an operator, and an expected value. It has no code of it
 | `src/rules_engine/feature_computations/` | Where each feature's data comes from and how it is computed |
 | `src/rules_engine/cli.py` | Register, approve, activate, retire, and inspect rules (`make rules`) |
 | `src/rules_engine/engine.py` | Applies the versions in force on a date to one taxpayer or to the whole table |
-| `src/rules_engine/catalog.py` | The baseline rules loaded into an empty database, and the store settings |
+| `src/rules_engine/catalog.py` | Opens the rules database. It ships with no rules |
 | `src/rules_engine/cycles.py` | Which rules each exemption cycle switches on |
 
 ### Rules database
 
-PostgreSQL 16 at `postgresql://wht:wht@localhost:5432/wht_rules` (`rules_store` in `config.yaml`; `RULES_DB_URL` in a deployment) is the system of record. `make rules-db-init` creates the schema and loads the baseline from `catalog.py` when the database is empty; later runs keep what is there.
+PostgreSQL 16 at `postgresql://wht:wht@localhost:5432/wht_rules` (`rules_store` in `config.yaml`; `RULES_DB_URL` in a deployment) is the system of record. `make rules-db-init` creates the schema and leaves it empty. Rules are registered with the CLI or the checklist API. A cycle in `config.yaml` names the codes to switch on. `make grant` refuses to run if any switched-on code has no version in force on the assessment date, including a misspelled code. It does not write a grant table in that case.
 
 A version moves DRAFT → APPROVED → ACTIVE, then SUPERSEDED when a newer version takes over or RETIRED when the rule ends. The database itself enforces this, so a direct SQL session gets the same answer as the app:
 
@@ -97,12 +97,12 @@ feature_name: tax_collected
 operator: gte
 expected_value: 150000000.0
 YAML
-python -m rules_engine.cli register min_tax_v2.yaml --actor alice --reason "Policy memo 12/2026"
+python -m rules_engine.cli register min_tax_v2.yaml --actor alice --reason "Policy memo 12/2026" --rm
 python -m rules_engine.cli approve MIN_TAX_COLLECTED 2 --actor bob --reason "Checked against memo"
 python -m rules_engine.cli activate MIN_TAX_COLLECTED 2 --from 2027-01-01 --actor bob
 ```
 
-Version 1 still decides assessments before 1 January 2027, so reruns of earlier dates give the same answer. `python -m rules_engine.cli retire CODE --from DATE` ends a rule. `list --on DATE`, `history CODE`, `audit [CODE]`, and `runs` show the state and the trail. A new rule code also needs switching on in the cycle in `config.yaml`. A requirement that needs new data starts with a feature in `src/rules_engine/feature_computations/`, which must read a column on the joined table.
+Version 1 still decides assessments before 1 January 2027, so reruns of earlier dates give the same answer. `python -m rules_engine.cli retire CODE --from DATE` ends a rule. `list --on DATE`, `history CODE`, `audit [CODE]`, and `runs` show the state and the trail. A new rule code also needs switching on in the cycle in `config.yaml`. A requirement that needs new data starts with a feature in `src/rules_engine/feature_computations/`, which must read a column on the joined table. `register` refuses the rule until that feature exists.
 
 ### Checklist API
 

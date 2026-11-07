@@ -244,11 +244,11 @@ def add_label(
     """
     from rules_engine.catalog import default_engine
     from rules_engine.cycles import DEFAULT_RULES, run_date
-    from rules_engine.engine import outcome_column_name
+    from rules_engine.engine import codes_in_force, outcome_column_name
 
     engine = engine or default_engine()
     day = assessment_date or run_date()
-    codes = tuple(rule_codes or DEFAULT_RULES)
+    codes = codes_in_force(engine.registry, day, tuple(rule_codes or DEFAULT_RULES))
     judged = engine.evaluate_frame(df, day, codes)
     flags = {
         flag: F.when(F.col(outcome_column_name(code)) == "PASS", F.lit(1)).otherwise(F.lit(0))

@@ -52,11 +52,10 @@ def test_missing_cycle_names_the_one_to_add():
         ({"wht_2026_27_h1": {**H1, "end": "2026-12-30"}}, "should run from 2026-07-01 to 2026-12-31"),
         ({"wht_2026_28_h1": H1}, "should name financial year 2026_27"),
         ({"wht_2026_27_h1": H1, "special": {"start": "2026-12-01", "end": "2027-01-15", "rules": H1["rules"]}}, "overlap"),
-        ({"wht_2026_27_h1": {**H1, "rules": _rules("NOT_A_RULE")}}, "not in the catalog"),
         ({"wht_2026_27_h1": {**H1, "rules": _rules(*DEFAULT_RULES, off=DEFAULT_RULES)}}, "no enabled rules"),
         (
             {"wht_2026_27_h1": {**H1, "rules": [{"code": "MIN_TAX_COLLECTED", "expected_value": 1}]}},
-            "Thresholds are set in rules_engine/catalog.py",
+            "Thresholds are set when the rule is registered.",
         ),
     ],
 )

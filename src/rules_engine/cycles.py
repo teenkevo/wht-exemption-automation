@@ -6,8 +6,8 @@ Cycles follow the financial year, which starts on 1 July. Financial year
 The run date picks the cycle and is the assessment date for the rules.
 ``WHT_AS_OF`` changes that date for a rerun. ``WHT_CYCLE`` names a cycle directly.
 
-A cycle only switches rules on or off by code. Thresholds and versions come
-from ``rules_engine/catalog.py``.
+A cycle only switches rules on or off by code. A code applies once a version
+is in force in the rules database. Thresholds are set when the rule is registered.
 """
 
 from __future__ import annotations
@@ -103,6 +103,9 @@ def _cycle_dates(cycles: Mapping) -> dict[str, tuple[date, date]]:
 
 
 def _rule_codes(selected: str, entries: object, known: set[str]) -> tuple[str, ...]:
+    # ``known`` is the codes registered so far. A cycle may name a code before
+    # that version exists; it applies once the version is in force.
+    del known
     if not isinstance(entries, list) or not entries:
         raise ValueError(f"Checklist cycle {selected} needs a list of rules")
     codes: list[str] = []
@@ -114,13 +117,11 @@ def _rule_codes(selected: str, entries: object, known: set[str]) -> tuple[str, .
         if code in seen:
             raise ValueError(f"Checklist cycle {selected} repeats rule {code}")
         seen.add(code)
-        if code not in known:
-            raise ValueError(f"Rule {code} is not in the catalog. Known rules: {', '.join(sorted(known))}")
         extra = sorted(str(key) for key in raw if key not in {"code", "enabled"})
         if extra:
             raise ValueError(
                 f"Checklist cycle {selected} rule {code} sets {', '.join(extra)}. "
-                "Cycles only switch rules on or off. Thresholds are set in rules_engine/catalog.py"
+                "Cycles only switch rules on or off. Thresholds are set when the rule is registered."
             )
         if bool(raw.get("enabled", True)):
             codes.append(code)

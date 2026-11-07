@@ -1,11 +1,11 @@
 """Manage checklist rules in the rules database.
 
-    python -m rules_engine.cli init                        create the schema; load the baseline if empty
+    python -m rules_engine.cli init                        create the schema; leave it empty
     python -m rules_engine.cli list [--on 2026-11-07]      rules in force on a date
     python -m rules_engine.cli history CODE                every version of one rule
     python -m rules_engine.cli audit [CODE] [--limit 50]   who changed what, and why
     python -m rules_engine.cli runs [--limit 10]           grant runs and the versions they used
-    python -m rules_engine.cli register FILE.yaml          new DRAFT version from a rule file
+    python -m rules_engine.cli register FILE.yaml [--rm]   new DRAFT version from a rule file
     python -m rules_engine.cli approve CODE VERSION        sign off a DRAFT (not by its author)
     python -m rules_engine.cli activate CODE VERSION --from 2027-01-01
     python -m rules_engine.cli retire CODE --from 2027-07-01
@@ -57,7 +57,8 @@ def _init(registry: PostgresRuleRegistry, _args) -> None:
     registry.init_schema()
     if registry.is_empty():
         seed(registry)
-        print(f"Schema ready at {redact(registry.dsn)}; loaded the baseline catalog")
+    if registry.is_empty():
+        print(f"Schema ready at {redact(registry.dsn)}; no rules registered")
     else:
         print(f"Schema ready at {redact(registry.dsn)}; existing rules kept")
     _print_rules(registry.get_active_rules(date.today()))
@@ -96,13 +97,17 @@ def _runs(registry, args) -> None:
 
 
 def _register(registry, args) -> None:
-    raw = yaml.safe_load(Path(args.file).read_text())
+    path = Path(args.file)
+    raw = yaml.safe_load(path.read_text())
     if not isinstance(raw, dict):
         raise SystemExit(f"{args.file} must hold one rule as a mapping")
     blocked = sorted(set(raw) & {"version", "status", "effective_from", "effective_to", "created_by", "approved_by"})
     if blocked:
         raise SystemExit(f"{args.file} sets {', '.join(blocked)}; the registry assigns those")
     draft = registry.register(RuleDefinition(**raw), actor=args.actor, reason=args.reason)
+    if args.rm:
+        path.unlink()
+        print(f"Removed {path}")
     print(f"Registered {draft.key} as DRAFT. Next: another person runs approve {draft.rule_code} {draft.version}")
 
 
@@ -144,6 +149,7 @@ def parser() -> argparse.ArgumentParser:
     runs.set_defaults(run=_runs)
     register = commands.add_parser("register", parents=[common])
     register.add_argument("file")
+    register.add_argument("--rm", action="store_true", help="Delete the rule file after the draft is stored")
     register.set_defaults(run=_register)
     approve = commands.add_parser("approve", parents=[common])
     approve.add_argument("code")

@@ -20,7 +20,7 @@ from datetime import date, datetime, timezone
 
 from rules_engine.feature_computations import FeatureRegistry
 from rules_engine.rule_models import AuditAction, AuditEvent, RuleDefinition, RuleStatus
-from rules_engine.validators import validate_rule, validate_shape
+from rules_engine.validators import validate_rule
 
 
 def check_approval(rule: RuleDefinition, actor: str) -> None:
@@ -76,10 +76,13 @@ class RuleRegistry:
         self._rules[rule.rule_code][rule.version - 1] = rule
 
     def register(self, rule: RuleDefinition, *, actor: str = "system", reason: str = "") -> RuleDefinition:
-        """Add a new DRAFT version. The version number is assigned here."""
+        """Add a new DRAFT version. The version number is assigned here.
+
+        The feature must already exist. A draft that could not be approved is refused.
+        """
         if rule.status != RuleStatus.DRAFT:
             raise ValueError("New rule versions must be DRAFT")
-        validate_shape(rule)
+        validate_rule(rule, self.features)
         versions = self._rules.setdefault(rule.rule_code, [])
         if any(item.status == RuleStatus.RETIRED for item in versions):
             raise ValueError(f"{rule.rule_code} is retired. Register the requirement under a new code")

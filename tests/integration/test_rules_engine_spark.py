@@ -5,10 +5,69 @@ from datetime import date
 import pytest
 
 from rules_engine import RuleDefinition, RuleOperator, RulesEngine
-from rules_engine.catalog import CHANGES, CATALOG_START, build_registry, release
+from rules_engine.catalog import CATALOG_START, build_registry, release
 from rules_engine.engine import outcome_column_name
 
 DAY = date(2026, 11, 7)
+
+# A fixed checklist owned by this test. catalog.py stays empty.
+CHECKLIST = (
+    release(
+        RuleDefinition(
+            rule_code="REGISTERED",
+            title="Registered",
+            description="Registration status is REGD",
+            feature_name="registration_status",
+            operator=RuleOperator.EQ,
+            expected_value="REGD",
+        ),
+        effective_from=CATALOG_START,
+    ),
+    release(
+        RuleDefinition(
+            rule_code="EXISTING_TAXPAYER",
+            title="Existing taxpayer",
+            description="Taxpayer status is Existing Taxpayer",
+            feature_name="taxpayer_status",
+            operator=RuleOperator.EQ,
+            expected_value="Existing Taxpayer",
+        ),
+        effective_from=CATALOG_START,
+    ),
+    release(
+        RuleDefinition(
+            rule_code="NO_OUTSTANDING_LIABILITY",
+            title="No outstanding liability",
+            description="Outstanding liability across ledger entries is at most zero",
+            feature_name="outstanding_liability",
+            operator=RuleOperator.LTE,
+            expected_value=0.0,
+        ),
+        effective_from=CATALOG_START,
+    ),
+    release(
+        RuleDefinition(
+            rule_code="RETURNS_FILED",
+            title="Has filed returns",
+            description="At least one income tax return is on record",
+            feature_name="returns_filed_count",
+            operator=RuleOperator.GT,
+            expected_value=0,
+        ),
+        effective_from=CATALOG_START,
+    ),
+    release(
+        RuleDefinition(
+            rule_code="MIN_TAX_COLLECTED",
+            title="Tax collected at least 100M",
+            description="Total tax paid is at least UGX 100,000,000",
+            feature_name="tax_collected",
+            operator=RuleOperator.GTE,
+            expected_value=100_000_000,
+        ),
+        effective_from=CATALOG_START,
+    ),
+)
 
 EXTRA = (
     release(
@@ -68,7 +127,8 @@ ROWS = [
 
 @pytest.mark.parametrize("with_extra", [False, True])
 def test_batch_and_single_taxpayer_checklists_agree(spark, with_extra):
-    engine = RulesEngine(build_registry(CHANGES + EXTRA) if with_extra else build_registry())
+    rules = CHECKLIST + EXTRA if with_extra else CHECKLIST
+    engine = RulesEngine(build_registry(rules))
     rules = engine.rules_for(DAY)
     frame = spark.createDataFrame(ROWS, schema=", ".join(f"{name} {'string' if i < 3 else 'double'}" for i, name in enumerate(RAW_COLUMNS)))
     judged = {row["TIN_NO"]: row.asDict() for row in engine.evaluate_frame(frame, DAY).collect()}
@@ -84,7 +144,7 @@ def test_batch_and_single_taxpayer_checklists_agree(spark, with_extra):
 
 
 def test_missing_source_rows_count_as_zero_and_missing_status_goes_to_review(spark):
-    engine = RulesEngine(build_registry())
+    engine = RulesEngine(build_registry(CHECKLIST))
     frame = spark.createDataFrame(ROWS, schema=", ".join(f"{name} {'string' if i < 3 else 'double'}" for i, name in enumerate(RAW_COLUMNS)))
     judged = {row["TIN_NO"]: row for row in engine.evaluate_frame(frame, DAY).collect()}
     assert judged["T1"]["decision"] == "ELIGIBLE"
@@ -96,7 +156,15 @@ def test_missing_source_rows_count_as_zero_and_missing_status_goes_to_review(spa
     assert judged["T5"]["rule_min_tax_collected"] == "REVIEW"
 
 
+def test_an_empty_checklist_marks_every_row_not_configured(spark):
+    frame = spark.createDataFrame([("T1",)], schema="TIN_NO string")
+    row = RulesEngine(build_registry()).evaluate_frame(frame, DAY).collect()[0]
+    assert row["checklist_status"] == "NOT_CONFIGURED"
+    assert row["decision"] == "NOT CONFIGURED"
+    assert row["rules_applied"] == ""
+
+
 def test_a_missing_source_column_names_its_lake_table(spark):
     frame = spark.createDataFrame([("T1", "REGD")], schema="TIN_NO string, REG_STATUS string")
     with pytest.raises(ValueError, match=r"total_tax_collected \(from payments\)"):
-        RulesEngine(build_registry()).evaluate_frame(frame, DAY)
+        RulesEngine(build_registry(CHECKLIST)).evaluate_frame(frame, DAY)

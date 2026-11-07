@@ -52,22 +52,43 @@ def _in_force(registry, rule: RuleDefinition, start: date):
     return registry.activate(draft.rule_code, draft.version, start, actor="approver")
 
 
-def test_catalog_puts_the_five_rules_in_force():
+def _checklist(registry):
+    """Two rules installed by the test, not by catalog.py."""
+    _in_force(
+        registry,
+        RuleDefinition(
+            rule_code="REGISTERED",
+            title="Registered",
+            description="Registration status is REGD",
+            feature_name="registration_status",
+            operator=RuleOperator.EQ,
+            expected_value="REGD",
+        ),
+        date(2026, 7, 1),
+    )
+    _in_force(
+        registry,
+        RuleDefinition(
+            rule_code="MIN_TAX_COLLECTED",
+            title="Tax collected at least 100M",
+            description="Total tax paid is at least UGX 100,000,000",
+            feature_name="tax_collected",
+            operator=RuleOperator.GTE,
+            expected_value=100_000_000,
+        ),
+        date(2026, 7, 1),
+    )
+    return RulesEngine(registry)
+
+
+def test_an_empty_catalog_has_no_rules_in_force():
     engine = RulesEngine(default_registry())
-    rules = engine.rules_for(DAY)
-    assert [rule.key for rule in rules] == [
-        "REGISTERED:v1",
-        "EXISTING_TAXPAYER:v1",
-        "NO_OUTSTANDING_LIABILITY:v1",
-        "RETURNS_FILED:v1",
-        "MIN_TAX_COLLECTED:v1",
-    ]
-    assert default_registry().current("MIN_TAX_COLLECTED").expected_value == 100_000_000
-    assert engine.rules_for(date(2026, 6, 30)) == []
+    assert engine.rules_for(DAY) == []
+    assert engine.evaluate("demo", PASSING, DAY).checklist_status == ChecklistStatus.NOT_CONFIGURED
 
 
 def test_engine_passes_fails_and_sends_missing_data_to_review():
-    engine = RulesEngine(default_registry())
+    engine = _checklist(_registry())
     passed = engine.evaluate("demo", PASSING, DAY)
     assert passed.checklist_status == ChecklistStatus.PASS
     assert passed.decision == "ELIGIBLE"
@@ -81,15 +102,11 @@ def test_engine_passes_fails_and_sends_missing_data_to_review():
     assert collected.expected_value == 100_000_000
     assert collected.source_table == "payments"
 
-    review = engine.evaluate("demo", {**PASSING, "taxpayer_status": None}, DAY)
-    assert review.checklist_status == ChecklistStatus.REVIEW
-    assert review.decision == "NEEDS REVIEW"
-
 
 def test_a_cycle_limits_and_orders_the_rules():
-    engine = RulesEngine(default_registry())
-    result = engine.evaluate("demo", {**PASSING, "tax_collected": 0.0}, DAY, ["RETURNS_FILED", "REGISTERED"])
-    assert [item.rule_code for item in result.results] == ["RETURNS_FILED", "REGISTERED"]
+    engine = _checklist(_registry())
+    result = engine.evaluate("demo", PASSING, DAY, ["MIN_TAX_COLLECTED", "REGISTERED"])
+    assert [item.rule_code for item in result.results] == ["MIN_TAX_COLLECTED", "REGISTERED"]
     assert result.checklist_status == ChecklistStatus.PASS
     with pytest.raises(ValueError, match="No version in force"):
         engine.rules_for(DAY, ["NOT_A_RULE"])
@@ -127,6 +144,35 @@ def test_versions_supersede_and_history_stays_queryable():
         (AuditAction.SUPERSEDED, 1),
         (AuditAction.ACTIVATED, 2),
     ]
+
+
+def test_register_deletes_the_yaml_only_after_the_draft_is_stored(tmp_path):
+    from types import SimpleNamespace
+
+    from rules_engine.cli import _register
+
+    kept = tmp_path / "missing.yaml"
+    kept.write_text("rule_code: MIN_SALES\ntitle: t\ndescription: d\nfeature_name: not_a_feature\noperator: gte\nexpected_value: 1\n")
+    registry = _registry()
+    with pytest.raises(ValueError, match="unknown feature"):
+        _register(registry, SimpleNamespace(file=str(kept), actor="alice", reason="", rm=True))
+    assert kept.exists()
+    assert registry.codes() == []
+
+    used = tmp_path / "min_sales.yaml"
+    used.write_text(
+        "rule_code: MIN_SALES\ntitle: t\ndescription: d\nfeature_name: efris_sales_total\noperator: gte\nexpected_value: 10000000\n"
+    )
+    _register(registry, SimpleNamespace(file=str(used), actor="alice", reason="memo", rm=True))
+    assert not used.exists()
+    assert registry.get("MIN_SALES", 1).status == RuleStatus.DRAFT
+
+
+def test_register_rejects_an_unknown_feature():
+    registry = _registry()
+    with pytest.raises(ValueError, match="unknown feature"):
+        registry.register(_rule(feature_name="not_a_feature"), actor="author")
+    assert registry.codes() == []
 
 
 def test_lifecycle_needs_a_second_person_and_cannot_skip_steps():

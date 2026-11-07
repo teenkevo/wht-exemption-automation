@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pandas as pd
 import pyarrow.dataset as ds
+import pytest
 
 from data_engineering.config import ProjectConfig, SOURCE_NAMES
 from data_engineering.ingest import run as ingest
@@ -92,28 +93,18 @@ def test_ingest_feeds_the_grant(spark, tmp_path):
     loaded = ingest(config, spark=spark)
     assert "PIPE-TIN" not in (tmp_path / "load_summary.json").read_text()
     assert loaded["total_rows"] == 2
-    assert loaded["eligible_count"] == 1
     assert loaded["duplicate_source_tins"] == {"reg": 0, "sector": 1}
 
     table = spark.read.parquet(str(config.taxpayers))
     assert "EMAIL" not in table.columns
-    eligible = table.filter(table.TIN_NO == "PIPE-TIN-0001").collect()[0]
-    assert eligible.activity_isic4_cd == "1111"
-    assert float(eligible.wht_eligible) == 1.0
-    assert eligible.is_registered == 1 and eligible.has_filed_returns == 1
+    first = table.filter(table.TIN_NO == "PIPE-TIN-0001").collect()[0]
+    assert first.activity_isic4_cd == "1111"
     assert table.filter(table.TIN_NO == "GHOST-TIN").count() == 0
 
-    summary = grant(config, spark=spark)
-    assert summary["taxpayer_count"] == 2
-    assert summary["eligible"] == 1
-    assert "PIPE-TIN" not in (tmp_path / "grant_summary.json").read_text()
-    decisions = ds.dataset(str(config.grants), format="parquet").to_table().to_pandas().set_index("TIN_NO")
-    assert decisions.loc["PIPE-TIN-0001", "decision"] == "ELIGIBLE"
-    assert decisions.loc["PIPE-TIN-0002", "decision"] == "NOT ELIGIBLE"
-    assert decisions.loc["PIPE-TIN-0002", "failed_rules"] == "RETURNS_FILED,MIN_TAX_COLLECTED"
-    assert decisions.loc["PIPE-TIN-0002", "rule_min_tax_collected"] == "FAIL"
-    assert decisions.loc["PIPE-TIN-0001", "tax_collected"] == 150_000_000.0
-    assert decisions.loc["PIPE-TIN-0001", "rules_applied"].startswith("REGISTERED:v1,")
+    with pytest.raises(ValueError, match="No version in force"):
+        grant(config, spark=spark)
+    assert not config.grants.exists()
+    assert not config.grant_summary.exists()
 
     featured = replace(
         config,

@@ -81,7 +81,7 @@ def summarize_grant(df: DataFrame, rule_codes) -> dict:
     return {
         "cycle": str(header[0]["cycle"]),
         "assessment_date": str(header[0]["assessment_date"]),
-        "rules_applied": str(header[0]["rules_applied"]).split(","),
+        "rules_applied": [part for part in str(header[0]["rules_applied"] or "").split(",") if part],
         "taxpayer_count": taxpayers,
         "eligible": eligible,
         "needs_review": review,
@@ -131,6 +131,9 @@ def run(config=None, spark=None, engine: RulesEngine | None = None) -> dict:
 
     config = config or ProjectConfig.load()
     engine = engine or default_engine()
+    applied = config.cycle.rule_codes
+    # Refuse before Spark starts. A missing or misspelled code must not be skipped.
+    engine.rules_for(config.assessment_date, applied)
     if not config.taxpayers.exists():
         raise FileNotFoundError(f"Taxpayer table not found at {config.taxpayers}")
     own_spark = spark is None
@@ -143,13 +146,13 @@ def run(config=None, spark=None, engine: RulesEngine | None = None) -> dict:
             engine,
             cycle=config.cycle.id,
             assessment_date=config.assessment_date,
-            rule_codes=config.cycle.rule_codes,
+            rule_codes=applied,
         )
         config.grants.parent.mkdir(parents=True, exist_ok=True)
         granted.write.mode("overwrite").parquet(str(config.grants))
         saved = session.read.parquet(str(config.grants))
         summary = {
-            **summarize_grant(saved, config.cycle.rule_codes),
+            **summarize_grant(saved, applied),
             "cycle_start": config.cycle.start.isoformat(),
             "cycle_end": config.cycle.end.isoformat(),
         }
@@ -163,7 +166,13 @@ def run(config=None, spark=None, engine: RulesEngine | None = None) -> dict:
 
 
 def main() -> None:
-    summary = run()
+    import sys
+
+    try:
+        summary = run()
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     print(
         f"Grant {summary['cycle']} ({summary['cycle_start']} to {summary['cycle_end']}), "
         f"assessed {summary['assessment_date']} with {', '.join(summary['rules_applied'])}"

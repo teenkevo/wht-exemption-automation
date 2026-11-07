@@ -69,9 +69,11 @@ def with_label(
         return df.withColumn("label", F.col("wht_eligible").cast("int")), "wht_eligible"
     from rules_engine.catalog import default_engine
     from rules_engine.cycles import DEFAULT_RULES, run_date
+    from rules_engine.engine import codes_in_force
 
     engine = engine or default_engine()
-    judged = engine.evaluate_frame(df, assessment_date or run_date(), tuple(rule_codes or DEFAULT_RULES))
+    day = assessment_date or run_date()
+    judged = engine.evaluate_frame(df, day, codes_in_force(engine.registry, day, tuple(rule_codes or DEFAULT_RULES)))
     passed = (F.col("checklist_status") == F.lit("PASS")).cast("int")
     return judged.select(*[F.col(name) for name in df.columns], passed.alias("label")), "rules"
 

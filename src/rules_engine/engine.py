@@ -30,6 +30,12 @@ def outcome_column_name(rule_code: str) -> str:
     return f"rule_{rule_code.lower()}"
 
 
+def codes_in_force(registry: RuleRegistry, day: date, rule_codes: Sequence[str]) -> tuple[str, ...]:
+    """The cycle codes that have a version in force. Codes not registered yet are left out."""
+    available = {rule.rule_code for rule in registry.get_active_rules(day)}
+    return tuple(code for code in rule_codes if code in available)
+
+
 def rules_applied_text(rules: Sequence[RuleDefinition]) -> str:
     return ",".join(rule.key for rule in rules)
 
@@ -128,7 +134,17 @@ class RulesEngine:
 
         rules = self.rules_for(assessment_date, rule_codes)
         if not rules:
-            raise ValueError(f"No checklist rules are in force on {assessment_date}")
+            return df.withColumns(
+                {
+                    "failed_rules": F.lit(""),
+                    "review_rules": F.lit(""),
+                    "rules_failed_count": F.lit(0),
+                    "checklist_status": F.lit(ChecklistStatus.NOT_CONFIGURED.value),
+                    "assessment_date": F.lit(assessment_date.isoformat()),
+                    "rules_applied": F.lit(""),
+                    "decision": F.lit(DECISIONS[ChecklistStatus.NOT_CONFIGURED]),
+                }
+            )
         featured = self.registry.features.compute(df, [rule.feature_name for rule in rules])
         outcomes = {
             outcome_column_name(rule.rule_code): outcome_column(rule, F.col(rule.feature_name))

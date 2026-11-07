@@ -54,34 +54,18 @@ def _sql(registry, statement, params=()):
         return conn.execute(statement, params)
 
 
-def test_baseline_in_postgres_decides_like_the_catalog(registry):
+def test_an_empty_catalog_leaves_the_database_empty(registry):
     assert registry.is_empty()
     seed(registry)
     registry.init_schema()
-    assert not registry.is_empty()
-    engine = RulesEngine(registry)
-    assert [rule.key for rule in engine.rules_for(DAY)] == [
-        "REGISTERED:v1",
-        "EXISTING_TAXPAYER:v1",
-        "NO_OUTSTANDING_LIABILITY:v1",
-        "RETURNS_FILED:v1",
-        "MIN_TAX_COLLECTED:v1",
-    ]
-    result = engine.evaluate(
-        "demo",
-        {
-            "registration_status": "REGD",
-            "taxpayer_status": "Existing Taxpayer",
-            "outstanding_liability": 0.0,
-            "returns_filed_count": 2.0,
-            "tax_collected": 99.0,
-        },
-        DAY,
-    )
-    assert result.failed_rules == ["MIN_TAX_COLLECTED"]
-    collected = registry.current("MIN_TAX_COLLECTED")
-    assert collected.expected_value == 100_000_000
-    assert (collected.created_by, collected.approved_by) == ("catalog", "catalog-baseline")
+    assert registry.is_empty()
+    assert RulesEngine(registry).rules_for(DAY) == []
+
+
+def test_register_rejects_an_unknown_feature(registry):
+    with pytest.raises(ValueError, match="unknown feature"):
+        registry.register(_sales_rule(feature_name="not_a_feature"), actor="alice")
+    assert registry.is_empty()
 
 
 def test_lifecycle_versions_and_audit_trail(registry):

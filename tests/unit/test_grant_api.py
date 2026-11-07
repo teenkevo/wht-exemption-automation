@@ -7,15 +7,38 @@ from fastapi.testclient import TestClient
 from api.dependencies import get_grant_service
 from api.main import create_app
 from api.services.grant_service import GrantService, GrantTableInvalid
-from rules_engine import default_engine
+from rules_engine import RuleDefinition, RuleOperator, RuleRegistry, RulesEngine
 from rules_engine.engine import outcome_column_name, rules_applied_text
+from rules_engine.feature_computations import FEATURES
 
 DAY = date(2026, 11, 7)
 
 
-def _grant_row(tin: str, features: dict) -> dict:
+def _engine() -> RulesEngine:
+    """The rules this test explains. catalog.py contributes none."""
+    registry = RuleRegistry(FEATURES)
+    for code, feature, operator, expected in (
+        ("REGISTERED", "registration_status", RuleOperator.EQ, "REGD"),
+        ("MIN_TAX_COLLECTED", "tax_collected", RuleOperator.GTE, 100_000_000),
+    ):
+        draft = registry.register(
+            RuleDefinition(
+                rule_code=code,
+                title=code,
+                description=code,
+                feature_name=feature,
+                operator=operator,
+                expected_value=expected,
+            ),
+            actor="author",
+        )
+        registry.approve(code, draft.version, actor="approver")
+        registry.activate(code, draft.version, date(2026, 7, 1), actor="approver")
+    return RulesEngine(registry)
+
+
+def _grant_row(tin: str, features: dict, engine: RulesEngine) -> dict:
     """The row the batch grant writes, built from the same engine."""
-    engine = default_engine()
     result = engine.evaluate(tin, features, DAY)
     row = {"TIN_NO": tin, **features}
     for item in result.results:
@@ -43,14 +66,17 @@ PASSING = {
 
 
 def test_grant_lookup_explains_each_rule(tmp_path):
+    engine = _engine()
     path = tmp_path / "grants.parquet"
     rows = [
-        _grant_row("DEMO-TIN-0001", PASSING),
-        _grant_row("DEMO-TIN-0002", {**PASSING, "tax_collected": 10.0, "registration_status": None}),
+        _grant_row("DEMO-TIN-0001", PASSING, engine),
+        _grant_row("DEMO-TIN-0002", {**PASSING, "tax_collected": 10.0, "registration_status": None}, engine),
     ]
     pd.DataFrame(rows).to_parquet(path)
+    service = GrantService.load(path)
+    service.engine = engine
     app = create_app()
-    app.dependency_overrides[get_grant_service] = lambda: GrantService.load(path)
+    app.dependency_overrides[get_grant_service] = lambda: service
     client = TestClient(app)
 
     ready = client.get("/ready")
@@ -79,12 +105,28 @@ def test_grant_lookup_explains_each_rule(tmp_path):
 
 
 def test_a_tampered_row_is_rejected(tmp_path):
-    row = _grant_row("DEMO-TIN-0001", PASSING)
+    engine = _engine()
+    row = _grant_row("DEMO-TIN-0001", PASSING, engine)
     row[outcome_column_name("MIN_TAX_COLLECTED")] = "FAIL"
     path = tmp_path / "grants.parquet"
     pd.DataFrame([row]).to_parquet(path)
+    service = GrantService.load(path)
+    service.engine = engine
     with pytest.raises(GrantTableInvalid, match="does not match"):
-        GrantService.load(path).lookup("DEMO-TIN-0001")
+        service.lookup("DEMO-TIN-0001")
+
+
+def test_grant_stops_when_a_cycle_code_has_no_version(tmp_path):
+    from dataclasses import replace
+
+    from data_engineering.config import ProjectConfig
+    from inference.grant import run
+
+    config = replace(ProjectConfig.load(), taxpayers=tmp_path / "taxpayers", grants=tmp_path / "grants")
+    with pytest.raises(ValueError, match="No version in force") as caught:
+        run(config, engine=RulesEngine(RuleRegistry(FEATURES)))
+    assert "REGISTERED" in str(caught.value)
+    assert not config.grants.exists()
 
 
 def test_rules_database_down_answers_503(monkeypatch):

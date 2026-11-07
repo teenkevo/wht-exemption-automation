@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 from rules_engine.feature_computations import FeatureRegistry
 from rules_engine.registry import check_activation, check_approval, check_retirement
 from rules_engine.rule_models import AuditEvent, RuleDefinition, RuleStatus
-from rules_engine.validators import validate_rule, validate_shape
+from rules_engine.validators import validate_rule
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 COLUMNS = (
@@ -132,7 +132,7 @@ class PostgresRuleRegistry:
     def register(self, rule: RuleDefinition, *, actor: str, reason: str = "") -> RuleDefinition:
         if rule.status != RuleStatus.DRAFT:
             raise ValueError("New rule versions must be DRAFT")
-        validate_shape(rule)
+        validate_rule(rule, self.features)
         with self._change(actor, reason, rule.rule_code) as conn:
             if conn.execute(
                 "SELECT 1 FROM rule_versions WHERE rule_code = %s AND status = 'RETIRED'", (rule.rule_code,)
