@@ -71,18 +71,12 @@ def test_register_rejects_an_unknown_feature(registry):
 def test_lifecycle_versions_and_audit_trail(registry):
     draft = registry.register(_sales_rule(), actor="alice", reason="new policy memo")
     assert (draft.version, draft.status) == (1, RuleStatus.DRAFT)
-    with pytest.raises(ValueError, match="another person must approve"):
-        registry.approve("MIN_SALES", 1, actor="alice")
-    with pytest.raises(ValueError, match="only an APPROVED"):
-        registry.activate("MIN_SALES", 1, date(2026, 7, 1), actor="bob")
-    registry.approve("MIN_SALES", 1, actor="bob", reason="checked against memo")
-    registry.activate("MIN_SALES", 1, date(2026, 7, 1), actor="bob")
+    registry.activate("MIN_SALES", 1, date(2026, 7, 1), actor="alice", reason="in force from 2026-07-01")
 
     registry.register(_sales_rule(expected_value=20_000_000), actor="alice", reason="threshold raised")
-    registry.approve("MIN_SALES", 2, actor="carol")
     with pytest.raises(ValueError, match="cannot start on"):
-        registry.activate("MIN_SALES", 2, date(2026, 7, 1), actor="carol")
-    registry.activate("MIN_SALES", 2, date(2027, 1, 1), actor="carol")
+        registry.activate("MIN_SALES", 2, date(2026, 7, 1), actor="alice")
+    registry.activate("MIN_SALES", 2, date(2027, 1, 1), actor="alice", reason="in force from 2027-01-01")
 
     first, second = registry.history("MIN_SALES")
     assert (first.status, first.effective_to) == (RuleStatus.SUPERSEDED, date(2027, 1, 1))
@@ -93,12 +87,10 @@ def test_lifecycle_versions_and_audit_trail(registry):
     trail = [(event.action, event.version, event.actor, event.detail) for event in registry.audit_log("MIN_SALES")]
     assert trail == [
         ("REGISTERED", 1, "alice", "new policy memo"),
-        ("APPROVED", 1, "bob", "checked against memo"),
-        ("ACTIVATED", 1, "bob", "in force from 2026-07-01"),
+        ("ACTIVATED", 1, "alice", "in force from 2026-07-01"),
         ("REGISTERED", 2, "alice", "threshold raised"),
-        ("APPROVED", 2, "carol", ""),
-        ("SUPERSEDED", 1, "carol", "in force from 2027-01-01"),
-        ("ACTIVATED", 2, "carol", "in force from 2027-01-01"),
+        ("SUPERSEDED", 1, "alice", "in force from 2027-01-01"),
+        ("ACTIVATED", 2, "alice", "in force from 2027-01-01"),
     ]
     snapshot = _sql(
         registry,

@@ -21,8 +21,17 @@ def main() -> None:
         print(f"  {written:,} of {total:,} TINs written ({rate:,.0f} per second)", flush=True)
 
     summary = materialize(config, progress=progress)
-    print(f"Online store: {summary['online_store']}")
-    print(f"Materialized {summary['rows']:,} TINs from {summary['start']} to {summary['end']}")
+    from termstyle import fields, heading
+
+    heading("Materialize")
+    fields(
+        [
+            ("TINs", f"{summary['rows']:,}", "green"),
+            ("From", summary["start"], ""),
+            ("To", summary["end"], ""),
+            ("Online store", summary["online_store"], "cyan"),
+        ]
+    )
 
 
 if __name__ == "__main__":

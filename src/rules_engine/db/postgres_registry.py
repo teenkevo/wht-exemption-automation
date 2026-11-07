@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from rules_engine.feature_computations import FeatureRegistry
+from rules_engine.migrations import Change, Migration
 from rules_engine.registry import check_activation, check_approval, check_retirement
 from rules_engine.rule_models import AuditEvent, RuleDefinition, RuleStatus
 from rules_engine.validators import validate_rule
@@ -298,3 +299,113 @@ class PostgresRuleRegistry:
                 """,
                 (limit,),
             ).fetchall()
+
+    def applied_migrations(self) -> list[dict]:
+        with self._read() as conn:
+            return list(
+                conn.execute(
+                    """
+                    SELECT version, description, checksum, applied_at, applied_by
+                    FROM rule_migrations ORDER BY version
+                    """
+                ).fetchall()
+            )
+
+    def record_baseline(self, migration: Migration, *, actor: str) -> None:
+        """Record a file as already applied. The rules it describes are left untouched."""
+        with self._change(actor, f"baseline V{migration.version}") as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext('rule_migrations'))")
+            self._insert_migration(conn, migration, actor)
+
+    def apply_migration(self, migration: Migration, *, actor: str) -> list[RuleDefinition]:
+        """Register and activate every change in the file, then record it."""
+        results: list[RuleDefinition] = []
+        with self._lock:
+            conn = self._connection()
+            with conn.transaction():
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext('rule_migrations'))")
+                for change in migration.changes:
+                    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (change.rule_code,))
+                    results.append(self._apply_change(conn, change, actor))
+                self._insert_migration(conn, migration, actor)
+        return results
+
+    def _apply_change(self, conn, change: Change, actor: str) -> RuleDefinition:
+        self._set_actor(conn, actor, change.reason)
+        if change.retire:
+            active = check_retirement(self._active(conn, change.rule_code), change.rule_code, change.effective_from)
+            row = conn.execute(
+                f"""
+                UPDATE rule_versions SET status = 'RETIRED', effective_to = %s
+                WHERE rule_code = %s AND version = %s RETURNING {COLUMNS}
+                """,
+                (change.effective_from, change.rule_code, active.version),
+            ).fetchone()
+            return _rule(row)
+        if change.rule is None:
+            raise ValueError(f"{change.rule_code} needs a rule")
+        if conn.execute(
+            "SELECT 1 FROM rule_versions WHERE rule_code = %s AND status = 'RETIRED'", (change.rule_code,)
+        ).fetchone():
+            raise ValueError(f"{change.rule_code} is retired. Register the requirement under a new code")
+        validate_rule(change.rule, self.features)
+        draft = _rule(
+            conn.execute(
+                f"""
+                INSERT INTO rule_versions (rule_code, version, title, description, feature_name, operator,
+                                           expected_value, mandatory, legal_reference, created_by)
+                SELECT %s, coalesce(max(version), 0) + 1, %s, %s, %s, %s, %s, %s, %s, %s
+                FROM rule_versions WHERE rule_code = %s
+                RETURNING {COLUMNS}
+                """,
+                (
+                    change.rule.rule_code,
+                    change.rule.title,
+                    change.rule.description,
+                    change.rule.feature_name,
+                    change.rule.operator.value,
+                    None if change.rule.expected_value is None else Jsonb(change.rule.expected_value),
+                    change.rule.mandatory,
+                    change.rule.legal_reference,
+                    actor,
+                    change.rule_code,
+                ),
+            ).fetchone()
+        )
+        previous = self._active(conn, draft.rule_code)
+        check_activation(draft, previous, change.effective_from)
+        validate_rule(draft.model_copy(update={"effective_from": change.effective_from}), self.features)
+        if previous is not None:
+            conn.execute(
+                """
+                UPDATE rule_versions SET status = 'SUPERSEDED', effective_to = %s
+                WHERE rule_code = %s AND version = %s
+                """,
+                (change.effective_from, draft.rule_code, previous.version),
+            )
+        return _rule(
+            conn.execute(
+                f"""
+                UPDATE rule_versions SET status = 'ACTIVE', effective_from = %s
+                WHERE rule_code = %s AND version = %s RETURNING {COLUMNS}
+                """,
+                (change.effective_from, draft.rule_code, draft.version),
+            ).fetchone()
+        )
+
+    @staticmethod
+    def _set_actor(conn, actor: str, reason: str) -> None:
+        conn.execute(
+            "SELECT set_config('app.actor', %s, true), set_config('app.reason', %s, true)",
+            (actor, reason),
+        )
+
+    @staticmethod
+    def _insert_migration(conn, migration: Migration, actor: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO rule_migrations (version, description, checksum, applied_by)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (migration.version, migration.description, migration.checksum, actor),
+        )

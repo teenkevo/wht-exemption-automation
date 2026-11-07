@@ -46,16 +46,25 @@ def score(config: ProjectConfig | None = None, spark=None) -> dict:
 
 
 def main() -> None:
+    from termstyle import fields, heading, note
+
     config = ProjectConfig.load()
     if not (config.models / config.serving_model).exists():
-        print("No trained ranker is available. Run the training job first.")
-        print(f"Scores: {config.scores}")
+        heading("Score")
+        note("No trained ranker is available. Run make train first.")
+        fields([("Scores", str(config.scores), "")])
         return
     summary = score(config)
-    print(f"Serving model: {summary['model_name']}")
-    print(f"Scores: {summary['scores']}")
-    print(f"Tiers: {summary['tiers']}")
-    print("The score does not change the five-rule grant decision.")
+    heading("Score")
+    fields(
+        [
+            ("Model", summary["model_name"], "cyan"),
+            ("Scores", summary["scores"], ""),
+            ("Tiers", str(summary["tiers"]), ""),
+        ]
+    )
+    print()
+    note("The score does not change the grant decision.")
 
 
 if __name__ == "__main__":

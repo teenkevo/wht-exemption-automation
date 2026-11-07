@@ -35,3 +35,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "rules_engine.db" = ["schema.sql"]
+"rules_engine.migrations" = ["*.yaml"]

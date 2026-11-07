@@ -3,8 +3,8 @@
 --
 -- The database enforces what must never break, even for a hand-written UPDATE:
 --   * a version's definition cannot change after it is registered
---   * status only moves DRAFT -> APPROVED -> ACTIVE -> SUPERSEDED or RETIRED
---   * the approver is a different person from the author
+--   * status moves DRAFT -> ACTIVE -> SUPERSEDED or RETIRED
+--     (DRAFT -> APPROVED -> ACTIVE is still accepted)
 --   * two versions of one rule cannot be in force on the same day
 --   * every insert and status change is written to rule_audit, which cannot be edited
 
@@ -30,7 +30,6 @@ CREATE TABLE IF NOT EXISTS rule_versions (
     PRIMARY KEY (rule_code, version),
     CHECK (effective_to IS NULL OR effective_from IS NOT NULL AND effective_to > effective_from),
     CHECK (approved_by IS NULL OR approved_by <> created_by),
-    CHECK (status IN ('DRAFT') OR approved_by IS NOT NULL),
     CHECK (status IN ('DRAFT', 'APPROVED') OR effective_from IS NOT NULL),
     CHECK (status IN ('SUPERSEDED', 'RETIRED') OR effective_to IS NULL),
     EXCLUDE USING gist (rule_code WITH =, daterange(effective_from, effective_to, '[)') WITH &&)
@@ -53,6 +52,15 @@ CREATE TABLE IF NOT EXISTS rule_audit (
 );
 
 CREATE INDEX IF NOT EXISTS rule_audit_rule ON rule_audit (rule_code, version, id);
+
+-- One row per applied rules/migrations file. The checksum stops a file being edited after it ran.
+CREATE TABLE IF NOT EXISTS rule_migrations (
+    version      integer     PRIMARY KEY CHECK (version >= 1),
+    description  text        NOT NULL,
+    checksum     text        NOT NULL,
+    applied_at   timestamptz NOT NULL DEFAULT clock_timestamp(),
+    applied_by   text        NOT NULL
+);
 
 -- One row per grant run: which rule versions decided it, and the counts.
 CREATE TABLE IF NOT EXISTS checklist_runs (
@@ -95,7 +103,7 @@ BEGIN
         RAISE EXCEPTION '%:v% cannot be edited; register a new version', OLD.rule_code, OLD.version;
     END IF;
     IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
-        (OLD.status = 'DRAFT' AND NEW.status = 'APPROVED') OR
+        (OLD.status = 'DRAFT' AND NEW.status IN ('APPROVED', 'ACTIVE')) OR
         (OLD.status = 'APPROVED' AND NEW.status = 'ACTIVE') OR
         (OLD.status = 'ACTIVE' AND NEW.status IN ('SUPERSEDED', 'RETIRED'))
     ) THEN
@@ -157,4 +165,9 @@ CREATE TRIGGER rule_audit_append_only
 DROP TRIGGER IF EXISTS checklist_runs_append_only ON checklist_runs;
 CREATE TRIGGER checklist_runs_append_only
     BEFORE UPDATE OR DELETE ON checklist_runs
+    FOR EACH ROW EXECUTE FUNCTION append_only();
+
+DROP TRIGGER IF EXISTS rule_migrations_append_only ON rule_migrations;
+CREATE TRIGGER rule_migrations_append_only
+    BEFORE UPDATE OR DELETE ON rule_migrations
     FOR EACH ROW EXECUTE FUNCTION append_only();

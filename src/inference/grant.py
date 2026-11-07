@@ -168,21 +168,38 @@ def run(config=None, spark=None, engine: RulesEngine | None = None) -> dict:
 def main() -> None:
     import sys
 
+    from termstyle import fields, heading, lines, note
+
     try:
         summary = run()
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    print(
-        f"Grant {summary['cycle']} ({summary['cycle_start']} to {summary['cycle_end']}), "
-        f"assessed {summary['assessment_date']} with {', '.join(summary['rules_applied'])}"
+    heading("Grant")
+    fields(
+        [
+            ("Cycle", summary["cycle"], "cyan"),
+            ("Window", f"{summary['cycle_start']}  to  {summary['cycle_end']}", ""),
+            ("Assessed", summary["assessment_date"], ""),
+        ]
     )
-    print(
-        f"{summary['taxpayer_count']:,} taxpayers: {summary['eligible']:,} eligible, "
-        f"{summary['not_eligible']:,} not eligible, {summary['needs_review']:,} need review"
+    print()
+    note("Rules")
+    lines(summary["rules_applied"] or ["none"], color="cyan", indent=4)
+    print()
+    review = summary["needs_review"]
+    fields(
+        [
+            ("Taxpayers", f"{summary['taxpayer_count']:,}", ""),
+            ("Eligible", f"{summary['eligible']:,}", "green"),
+            ("Not eligible", f"{summary['not_eligible']:,}", "red"),
+            ("Need review", f"{review:,}", "yellow" if review else ""),
+        ],
+        align="right",
     )
     if "run_id" in summary:
-        print(f"Recorded as grant run #{summary['run_id']} in the rules database")
+        print()
+        note(f"Recorded as grant run #{summary['run_id']}")
 
 
 if __name__ == "__main__":

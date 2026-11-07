@@ -6,9 +6,11 @@
     python -m rules_engine.cli audit [CODE] [--limit 50]   who changed what, and why
     python -m rules_engine.cli runs [--limit 10]           grant runs and the versions they used
     python -m rules_engine.cli register FILE.yaml [--rm]   new DRAFT version from a rule file
-    python -m rules_engine.cli approve CODE VERSION        sign off a DRAFT (not by its author)
-    python -m rules_engine.cli activate CODE VERSION --from 2027-01-01
+    python -m rules_engine.cli activate CODE VERSION --from 2027-01-01   put a DRAFT in force
     python -m rules_engine.cli retire CODE --from 2027-07-01
+    python -m rules_engine.cli migrations                  which migration files are applied
+    python -m rules_engine.cli migrate                     apply pending files, in order
+    python -m rules_engine.cli migrate --baseline 1        record files through V1 without running them
 
 ``--actor`` names the person (default: ``WHT_ACTOR`` or the login name).
 ``--reason`` is stored in the audit trail.
@@ -29,7 +31,9 @@ import yaml
 from rules_engine.feature_computations import FEATURES
 from rules_engine.catalog import rules_store_settings, seed
 from rules_engine.db import PostgresRuleRegistry, RulesDatabaseError, redact
+from rules_engine.migrations import load_migrations, migrations_dir, prepare
 from rules_engine.rule_models import RuleDefinition
+from termstyle import heading, lines, note, paint
 
 
 def _registry() -> PostgresRuleRegistry:
@@ -43,31 +47,46 @@ def _value(value) -> str:
     return json.dumps(value) if not isinstance(value, str) else value
 
 
+_STATUS_COLOR = {
+    "ACTIVE": "green",
+    "DRAFT": "yellow",
+    "APPROVED": "cyan",
+    "SUPERSEDED": "dim",
+    "RETIRED": "red",
+}
+
+
 def _print_rules(rules) -> None:
     for rule in rules:
         window = f"{rule.effective_from or '-'} to {rule.effective_to or 'open'}"
-        print(
-            f"{rule.key:<30} {rule.status.value:<10} {window:<26} "
-            f"{rule.feature_name} {rule.operator.value} {_value(rule.expected_value)}"
-            f"{'' if rule.mandatory else '  (optional)'}"
-        )
+        status = rule.status.value
+        optional = "" if rule.mandatory else "  optional"
+        key = paint(f"{rule.key:<28}", "cyan")
+        status_cell = paint(f"{status:<10}", _STATUS_COLOR.get(status, ""))
+        window_cell = paint(f"{window:<24}", "dim")
+        print(f"  {key}  {status_cell}  {window_cell}  {rule.feature_name} {rule.operator.value} {_value(rule.expected_value)}{optional}")
 
 
 def _init(registry: PostgresRuleRegistry, _args) -> None:
     registry.init_schema()
     if registry.is_empty():
         seed(registry)
+    heading("Rules database")
     if registry.is_empty():
-        print(f"Schema ready at {redact(registry.dsn)}; no rules registered")
-    else:
-        print(f"Schema ready at {redact(registry.dsn)}; existing rules kept")
+        note(f"Schema ready at {redact(registry.dsn)}")
+        note("No rules registered")
+        return
+    note(f"Schema ready at {redact(registry.dsn)}")
+    print()
     _print_rules(registry.get_active_rules(date.today()))
 
 
 def _list(registry, args) -> None:
     day = args.on or date.today()
     rules = registry.get_active_rules(day)
-    print(f"Rules in force on {day}: {len(rules)}")
+    heading(f"Rules in force on {day}")
+    note(f"{len(rules)} rule{'s' if len(rules) != 1 else ''}")
+    print()
     _print_rules(rules)
 
 
@@ -108,7 +127,7 @@ def _register(registry, args) -> None:
     if args.rm:
         path.unlink()
         print(f"Removed {path}")
-    print(f"Registered {draft.key} as DRAFT. Next: another person runs approve {draft.rule_code} {draft.version}")
+    print(f"Registered {draft.key} as DRAFT. Next: activate {draft.rule_code} {draft.version} --from YYYY-MM-DD")
 
 
 def _approve(registry, args) -> None:
@@ -119,6 +138,60 @@ def _approve(registry, args) -> None:
 def _activate(registry, args) -> None:
     rule = registry.activate(args.code, args.version, args.effective_from, actor=args.actor, reason=args.reason)
     print(f"{rule.key} is in force from {rule.effective_from}")
+
+
+def _migration_files(registry):
+    registry.init_schema()
+    return load_migrations(migrations_dir(), registry.features), registry.applied_migrations()
+
+
+def _migrations(registry, _args) -> None:
+    files, applied = _migration_files(registry)
+    recorded = {int(row["version"]): row for row in applied}
+    heading("Migrations")
+    note(str(migrations_dir()))
+    print()
+    for migration in files:
+        row = recorded.get(migration.version)
+        if row is None:
+            state, color = "pending", "yellow"
+        elif row["checksum"] != migration.checksum:
+            state, color = "edited after apply", "red"
+        else:
+            state, color = f"applied {row['applied_at']:%Y-%m-%d %H:%M} by {row['applied_by']}", "green"
+        print(f"  {paint(f'V{migration.version:03d}', 'cyan')}  {migration.description:<42} {paint(state, color)}")
+
+
+def _migrate(registry, args) -> None:
+    files, applied = _migration_files(registry)
+    plan = prepare(files, applied, has_rules=not registry.is_empty(), baseline=args.baseline)
+    if plan.baseline:
+        heading("Baseline")
+        for migration in plan.baseline:
+            registry.record_baseline(migration, actor=args.actor)
+            print(f"  {paint(f'V{migration.version:03d}', 'cyan')}  {migration.description}")
+        leftover = [migration for migration in files if migration.version > args.baseline]
+        if leftover:
+            print()
+            note(f"{len(leftover)} still pending. Run make rules-migrate to apply them.")
+        return
+    if not plan.pending:
+        heading("Migrations")
+        note("No pending migrations")
+        return
+    for migration in plan.pending:
+        rules = registry.apply_migration(migration, actor=args.actor)
+        heading(f"Applied V{migration.version:03d}")
+        note(migration.description)
+        print()
+        lines(
+            [
+                f"{rule.key}  {rule.status.value}  from "
+                f"{rule.effective_to if rule.effective_to and rule.status.value == 'RETIRED' else rule.effective_from}"
+                for rule in rules
+            ],
+            color="cyan",
+        )
 
 
 def _retire(registry, args) -> None:
@@ -164,6 +237,10 @@ def parser() -> argparse.ArgumentParser:
     retire.add_argument("code")
     retire.add_argument("--from", dest="effective_from", type=date.fromisoformat, required=True)
     retire.set_defaults(run=_retire)
+    commands.add_parser("migrations", parents=[common]).set_defaults(run=_migrations)
+    migrate = commands.add_parser("migrate", parents=[common])
+    migrate.add_argument("--baseline", type=int, help="Record files through this version without running them")
+    migrate.set_defaults(run=_migrate)
     return top
 
 
@@ -171,7 +248,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser().parse_args(argv)
     registry = _registry()
     try:
-        if args.command != "init":
+        if args.command not in {"init", "migrate", "migrations"}:
             registry.check()
         args.run(registry, args)
     except (RulesDatabaseError, ValueError) as exc:

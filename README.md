@@ -67,7 +67,7 @@ A rule names a feature, an operator, and an expected value. It has no code of it
 | `src/rules_engine/registry.py` | The lifecycle checks, plus an in-memory registry for tests and offline runs |
 | `src/rules_engine/db/` | The PostgreSQL registry (`postgres_registry.py`) and its schema (`schema.sql`) |
 | `src/rules_engine/feature_computations/` | Where each feature's data comes from and how it is computed |
-| `src/rules_engine/cli.py` | Register, approve, activate, retire, and inspect rules (`make rules`) |
+| `src/rules_engine/cli.py` | Register, activate, retire, and inspect rules (`make rules`) |
 | `src/rules_engine/engine.py` | Applies the versions in force on a date to one taxpayer or to the whole table |
 | `src/rules_engine/catalog.py` | Opens the rules database. It ships with no rules |
 | `src/rules_engine/cycles.py` | Which rules each exemption cycle switches on |
@@ -76,10 +76,10 @@ A rule names a feature, an operator, and an expected value. It has no code of it
 
 PostgreSQL 16 at `postgresql://wht:wht@localhost:5432/wht_rules` (`rules_store` in `config.yaml`; `RULES_DB_URL` in a deployment) is the system of record. `make rules-db-init` creates the schema and leaves it empty. Rules are registered with the CLI or the checklist API. A cycle in `config.yaml` names the codes to switch on. `make grant` refuses to run if any switched-on code has no version in force on the assessment date, including a misspelled code. It does not write a grant table in that case.
 
-A version moves DRAFT → APPROVED → ACTIVE, then SUPERSEDED when a newer version takes over or RETIRED when the rule ends. The database itself enforces this, so a direct SQL session gets the same answer as the app:
+A version moves DRAFT → ACTIVE, then SUPERSEDED when a newer version takes over or RETIRED when the rule ends. The database itself enforces this, so a direct SQL session gets the same answer as the app:
 
 - A version is never edited or deleted. A change is a new version.
-- The person who registered a version cannot approve it.
+- The person who registered a draft can activate it.
 - Versions of one rule never overlap in time, and only one is ACTIVE.
 - A start date is never moved or backdated before the current version.
 - A retired code cannot be registered again.
@@ -98,15 +98,27 @@ operator: gte
 expected_value: 150000000.0
 YAML
 python -m rules_engine.cli register min_tax_v2.yaml --actor alice --reason "Policy memo 12/2026" --rm
-python -m rules_engine.cli approve MIN_TAX_COLLECTED 2 --actor bob --reason "Checked against memo"
-python -m rules_engine.cli activate MIN_TAX_COLLECTED 2 --from 2027-01-01 --actor bob
+python -m rules_engine.cli activate MIN_TAX_COLLECTED 2 --from 2027-01-01 --actor alice
 ```
 
 Version 1 still decides assessments before 1 January 2027, so reruns of earlier dates give the same answer. `python -m rules_engine.cli retire CODE --from DATE` ends a rule. `list --on DATE`, `history CODE`, `audit [CODE]`, and `runs` show the state and the trail. A new rule code also needs switching on in the cycle in `config.yaml`. A requirement that needs new data starts with a feature in `src/rules_engine/feature_computations/`, which must read a column on the joined table. `register` refuses the rule until that feature exists.
 
+### Rule migrations
+
+`src/rules_engine/migrations/V001__baseline.yaml` is the shipped checklist. Later changes are the next file, `V002__short_name.yaml`, and are never an edit of an applied file. `make rules-migrate` applies pending files in order. Each file is one transaction: every rule in it is registered and activated, or nothing from that file is stored. The file number is not a rule version. The person who runs the command is recorded as the one who registered each rule.
+
+`python -m rules_engine.cli migrations` shows which files are applied. A database that already has rules entered by hand cannot replay `V001`. Record that file as already applied, then run later files:
+
+```bash
+python -m rules_engine.cli migrate --baseline 1
+python -m rules_engine.cli migrate
+```
+
+A checksum mismatch means an applied file was edited. Add a new file instead. A fresh database runs `make rules-migrate` and starts at `V001`.
+
 ### Checklist API
 
-`make serve` exposes the same operations as the rules CLI at `/api/v1/checklist`. A write sends the person in `X-Actor` and the reason in `X-Reason`. The author of a version cannot approve it.
+`make serve` exposes the same operations as the rules CLI at `/api/v1/checklist`. A write sends the person in `X-Actor` and the reason in `X-Reason`. A draft is activated directly.
 
 | Method and path | What it does |
 |---|---|
@@ -116,8 +128,7 @@ Version 1 still decides assessments before 1 January 2027, so reruns of earlier 
 | `GET /audit?code=&limit=` | Who changed what, and why |
 | `GET /runs?limit=` | Grant runs and the versions they used |
 | `POST /rules` | Register the next DRAFT version |
-| `POST /rules/{code}/versions/{version}/approve` | A different person signs it |
-| `POST /rules/{code}/versions/{version}/activate` | In force from `effective_from` |
+| `POST /rules/{code}/versions/{version}/activate` | Put a draft in force from a date |
 | `POST /rules/{code}/retire` | Stops applying on `effective_from` |
 
 The rules database answers 503 while it is down. A refused change answers 422, and a change the database constraints reject answers 409.

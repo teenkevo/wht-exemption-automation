@@ -175,15 +175,13 @@ def test_register_rejects_an_unknown_feature():
     assert registry.codes() == []
 
 
-def test_lifecycle_needs_a_second_person_and_cannot_skip_steps():
+def test_the_author_can_activate_a_draft():
     registry = _registry()
-    draft = registry.register(_rule(), actor="author")
-    with pytest.raises(ValueError, match="only an APPROVED version"):
-        registry.activate("MIN_SALES", 1, date(2026, 7, 1), actor="author")
-    with pytest.raises(ValueError, match="another person must approve"):
-        registry.approve("MIN_SALES", draft.version, actor="author")
-    registry.approve("MIN_SALES", draft.version, actor="approver")
-    assert registry.get("MIN_SALES", 1).approved_by == "approver"
+    registry.register(_rule(), actor="author")
+    activated = registry.activate("MIN_SALES", 1, date(2026, 7, 1), actor="author")
+    assert activated.status == RuleStatus.ACTIVE
+    assert activated.approved_by is None
+    assert activated.effective_from == date(2026, 7, 1)
 
 
 def test_activation_cannot_be_backdated_or_repeated():
@@ -193,7 +191,7 @@ def test_activation_cannot_be_backdated_or_repeated():
     registry.approve("MIN_SALES", 2, actor="approver")
     with pytest.raises(ValueError, match="cannot start on"):
         registry.activate("MIN_SALES", 2, date(2026, 7, 1), actor="approver")
-    with pytest.raises(ValueError, match="only an APPROVED"):
+    with pytest.raises(ValueError, match="only a DRAFT"):
         registry.activate("MIN_SALES", 1, date(2027, 6, 1), actor="approver")
     with pytest.raises(ValueError, match="must be DRAFT"):
         registry.register(_rule(status=RuleStatus.ACTIVE))

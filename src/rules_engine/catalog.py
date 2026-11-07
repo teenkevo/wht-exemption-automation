@@ -50,22 +50,20 @@ CHANGES: tuple[Release | Retirement, ...] = ()
 
 
 SEED_AUTHOR = "catalog"
-SEED_APPROVER = "catalog-baseline"
 
 
 def seed(registry, changes: tuple[Release | Retirement, ...] = CHANGES) -> None:
     """Replay a list of releases into any registry, memory or PostgreSQL."""
     for change in changes:
         if isinstance(change, Retirement):
-            registry.retire(change.rule_code, change.effective_to, actor=SEED_APPROVER, reason=change.reason)
+            registry.retire(change.rule_code, change.effective_to, actor=SEED_AUTHOR, reason=change.reason)
             continue
         draft = registry.register(change.rule, actor=SEED_AUTHOR, reason=change.reason or "seeded checklist")
-        registry.approve(draft.rule_code, draft.version, actor=SEED_APPROVER, reason="seeded checklist")
         registry.activate(
             draft.rule_code,
             draft.version,
             change.effective_from,
-            actor=SEED_APPROVER,
+            actor=SEED_AUTHOR,
             reason=change.reason or f"in force from {change.effective_from}",
         )
 

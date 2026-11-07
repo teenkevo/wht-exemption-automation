@@ -79,25 +79,32 @@ def run(config: ProjectConfig | None = None, spark=None, *, write: bool = True) 
 
 
 def main() -> None:
+    from termstyle import fields, heading, note
+
     config = ProjectConfig.load()
     if config.mode == "local":
         if not config.taxpayers.exists():
             raise SystemExit(f"Joined taxpayer table not found at {config.taxpayers}")
-        print(f"Local mode reads the joined table at {config.taxpayers}")
+        heading("Ingest")
+        note("Local mode reads the joined table")
+        fields([("Table", str(config.taxpayers), "")])
         return
     summary = run(config)
-    print(
-        f"Taxpayer load: {summary['total_rows']:,} rows, "
-        f"{summary['unique_tins']:,} unique TINs, "
-        f"{summary['eligible_count']:,} eligible"
-    )
     duplicates = summary["duplicate_source_tins"]
-    print(
-        "Source TINs appearing more than once: "
-        f"registration={duplicates['reg']:,}, sector={duplicates['sector']:,}"
+    heading("Ingest")
+    fields(
+        [
+            ("Rows", f"{summary['total_rows']:,}", ""),
+            ("Unique TINs", f"{summary['unique_tins']:,}", ""),
+            ("Eligible", f"{summary['eligible_count']:,}", "green"),
+            ("Registration duplicates", f"{duplicates['reg']:,}", ""),
+            ("Sector duplicates", f"{duplicates['sector']:,}", ""),
+            ("Table", summary["output"], "cyan"),
+        ]
     )
-    print("Coverage: " + ", ".join(f"{name}={summary[name]:,}" for name in COVERAGE_FIELDS))
-    print(f"Table: {summary['output']}")
+    print()
+    note("Coverage")
+    fields([(name, f"{summary[name]:,}", "") for name in COVERAGE_FIELDS])
 
 
 if __name__ == "__main__":

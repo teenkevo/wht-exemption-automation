@@ -369,16 +369,23 @@ def main() -> None:
     config = ProjectConfig.load()
     if not config.taxpayers.exists():
         raise SystemExit(f"Taxpayer table not found at {config.taxpayers}")
+    from termstyle import fields, heading, note
+
     summary = train(config=config)
     pr_auc = summary["pr_auc"]
-    pr_text = "n/a" if pr_auc is None else f"{pr_auc:.4f}"
-    print(
-        f"Ranker {summary['serving_model']}: {summary['taxpayers']:,} taxpayers, "
-        f"test PR-AUC {pr_text}, tiers {summary['tier_counts']}"
+    heading("Train")
+    fields(
+        [
+            ("Model", summary["serving_model"], "cyan"),
+            ("Taxpayers", f"{summary['taxpayers']:,}", ""),
+            ("Test PR-AUC", "n/a" if pr_auc is None else f"{pr_auc:.4f}", "green"),
+            ("Tiers", str(summary["tier_counts"]), ""),
+            ("Scores", summary["scores"], ""),
+            ("Report", summary["report"], ""),
+        ]
     )
-    print(f"Scores: {summary['scores']}")
-    print(f"Report: {summary['report']}")
-    print("The score does not change the five-rule grant decision.")
+    print()
+    note("The score does not change the grant decision.")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 """Register, approve, activate, supersede, and retire checklist rules, with an audit trail.
 
-A version moves DRAFT -> APPROVED -> ACTIVE, then SUPERSEDED when a newer
-version takes over or RETIRED when the rule ends. The approver must be a
-different person from the author. Every version is kept, so a past assessment
-can be rerun with the rules that applied then.
+A version moves DRAFT -> ACTIVE, then SUPERSEDED when a newer version takes
+over or RETIRED when the rule ends. The person who registered a draft may
+activate it. Every version is kept, so a past assessment can be rerun with
+the rules that applied then.
 
 Two registries share these methods:
 
@@ -31,8 +31,8 @@ def check_approval(rule: RuleDefinition, actor: str) -> None:
 
 
 def check_activation(target: RuleDefinition, previous: RuleDefinition | None, effective_from: date) -> None:
-    if target.status != RuleStatus.APPROVED:
-        raise ValueError(f"{target.key} is {target.status.value}, only an APPROVED version can be activated")
+    if target.status not in {RuleStatus.DRAFT, RuleStatus.APPROVED}:
+        raise ValueError(f"{target.key} is {target.status.value}, only a DRAFT can be activated")
     if previous is not None and previous.effective_from is not None and effective_from <= previous.effective_from:
         raise ValueError(
             f"{target.key} cannot start on {effective_from}; "
@@ -78,7 +78,7 @@ class RuleRegistry:
     def register(self, rule: RuleDefinition, *, actor: str = "system", reason: str = "") -> RuleDefinition:
         """Add a new DRAFT version. The version number is assigned here.
 
-        The feature must already exist. A draft that could not be approved is refused.
+        The feature must already exist. Activate the draft to put it in force.
         """
         if rule.status != RuleStatus.DRAFT:
             raise ValueError("New rule versions must be DRAFT")
@@ -130,7 +130,7 @@ class RuleRegistry:
         actor: str = "system",
         reason: str = "",
     ) -> RuleDefinition:
-        """Put an APPROVED version into force. The version it replaces is superseded on that date."""
+        """Put a DRAFT into force. The version it replaces is superseded on that date."""
         target = self.get(rule_code, version)
         previous = self.current(rule_code)
         check_activation(target, previous, effective_from)

@@ -1,7 +1,7 @@
 """Read and change checklist rules in the rules registry.
 
 Writes name the person in the ``X-Actor`` header and the reason in ``X-Reason``.
-The author of a version cannot approve it. A version is never edited: a correction
+A draft is activated directly. A version is never edited: a correction
 is the next version of the same rule code.
 """
 

@@ -54,12 +54,22 @@ def build(config: ProjectConfig | None = None, spark=None) -> dict:
 
 
 def main() -> None:
+    from termstyle import fields, heading, note
+
     summary = build()
-    print(f"Feature snapshot: {summary['features']} ({summary['rows']:,} rows)")
-    print(f"Feature plan: {summary['plan']}")
-    print(f"Registered {len(summary['registered_features'])} features in {summary['registry']}")
-    print(f"Online store: {summary['online_store']}")
-    print("Materialize them with: make materialize")
+    heading("Features")
+    fields(
+        [
+            ("Rows", f"{summary['rows']:,}", ""),
+            ("Registered", str(len(summary["registered_features"])), "green"),
+            ("Snapshot", summary["features"], "cyan"),
+            ("Plan", summary["plan"], ""),
+            ("Registry", summary["registry"], ""),
+            ("Online store", summary["online_store"], ""),
+        ]
+    )
+    print()
+    note("Next: make materialize")
 
 
 if __name__ == "__main__":

@@ -15,12 +15,17 @@ def spark_session(
     python = sys.executable
     os.environ["PYSPARK_PYTHON"] = python
     os.environ["PYSPARK_DRIVER_PYTHON"] = python
+    # A hostname that resolves to 127.0.0.1 makes Spark warn and pick another address.
+    os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
     builder = (
         SparkSession.builder.appName(app_name)
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.pyspark.python", python)
         .config("spark.pyspark.driver.python", python)
+        .config("spark.ui.showConsoleProgress", "false")
     )
+    if "spark.log.level" not in (configs or {}):
+        builder = builder.config("spark.log.level", "ERROR")
     if delta:
         builder = (
             builder.config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
