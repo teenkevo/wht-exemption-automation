@@ -1,0 +1,10 @@
+description: Raise the tax collected minimum from 1 January 2027
+changes:
+  - rule_code: MIN_TAX_COLLECTED
+    title: Tax collected at least 150M
+    description: Total tax paid is at least UGX 150,000,000
+    feature_name: tax_collected
+    operator: gte
+    expected_value: 150000000
+    effective_from: 2027-01-01
+    reason: Policy memo 12/2026

@@ -2,7 +2,9 @@
 
 Load taxpayers, apply a versioned checklist, rank similarity, and look up the result. The grant decision comes from the rules in force on the assessment date. A ranker score can sit beside that decision.
 
-PostgreSQL is the system of record for rules. A cycle in `config/config.yaml` switches those rules on or off by code. `make grant` computes each rule's feature, writes one row per TIN, and records which versions it used. `POST /grant` reads that row and rebuilds the evidence from those versions.
+Two settings decide whether a rule is used, and they live in different places. **Activation** is a row in PostgreSQL: which version is in force on which dates. **Enabling** is a line in a cycle in `config/config.yaml`: whether that cycle asks for the code. The grant uses a code when the cycle for the assessment date enables it and the database has a version in force on that date.
+
+`make grant` writes that result, one row per TIN, including the version it used (`CODE:vN`). `POST /grant` reads those rows. A new activation is stored immediately and shows up in lookups after the next `make grant`.
 
 ## Layout
 
@@ -23,7 +25,7 @@ PostgreSQL is the system of record for rules. A cycle in `config/config.yaml` sw
 1. `make ingest` reads registration, ledger, payments, EFRIS, sector, customs headers, and filed returns. Registration is the spine. Each other source becomes one row per TIN. Sector duplicates keep one activity code. The checklist label (`wht_eligible`) is 1 when every mandatory rule in force passes. Review counts as not eligible yet. Four audit flags (`is_registered`, `is_existing_taxpayer`, `no_outstanding_liability`, `has_filed_returns`) are written when that rule is in the cycle and in force. A code the cycle names that has no version yet is left out of the label.
 2. `make features` writes the ranker snapshot under `data/features` and registers that view in Feast. The label is the stored `wht_eligible`. Columns the checklist reads are kept out of the model inputs. Redis must be running: `make redis-up`.
 3. `make materialize` copies the snapshot into Redis at `localhost:6379`. It writes 100,000 TINs per batch and prints progress. About 6.6 million TINs take roughly six minutes and 5 GB of Redis memory. `REDIS_URL` points a deployment at another Redis. `online_store.type: sqlite` in `config.yaml` keeps a local file instead.
-4. `make grant` runs the rules engine over every TIN and writes `data/grants/wht_grants.parquet`. Each row has the feature behind every rule, each rule's outcome (`PASS`, `FAIL`, or `REVIEW`), the checklist status, the decision, and the rule versions used (`CODE:vN`). A summary with counts only is written to `artifacts/wht_grant_summary.json`, and a row is added to `checklist_runs`. Rules come from PostgreSQL. `make grant` stops before Spark starts if any switched-on code has no version in force on the assessment date, including a misspelled code.
+4. `make grant` runs the rules engine over every TIN and writes `data/grants/wht_grants.parquet`. The cycle says which codes are enabled. PostgreSQL says which version of each code is in force on the assessment date. Each row has the feature behind every rule, each rule's outcome (`PASS`, `FAIL`, or `REVIEW`), the checklist status, the decision, and the versions used (`CODE:vN`). A summary with counts only is written to `artifacts/wht_grant_summary.json`, and a row is added to `checklist_runs`. `make grant` stops before Spark starts if any enabled code has no version in force on the assessment date, including a misspelled code. The table stays as written until the next grant run.
 5. `make train` fits the three models. Reports contain counts, not TINs.
 6. `make score` writes a similarity score and a High, Medium, or Low tier to `data/scores/wht_scores.parquet`.
 7. `make serve` looks up the grant table on port 8001, serves the checklist rules API, and scores one TIN from Redis when a model is loaded.
@@ -68,10 +70,10 @@ A rule names a feature, an operator, and an expected value. It has no code of it
 feature in code
     → register a DRAFT (CLI, API, or a migration file)
     → another person may approve it
-    → activate it from a date
-    → the cycle switches that code on
-    → make grant writes one row per TIN
-    → POST /grant returns the decision and the evidence
+    → activate that version in the database, from a date
+    → enable the code in the cycle that should apply it
+    → make grant writes one row per TIN for the assessment date
+    → POST /grant returns that stored decision
 ```
 
 ### 1. The feature already exists
@@ -182,17 +184,19 @@ python -m rules_engine.cli register min_tax_v2.yaml --actor alice --reason "Poli
 python -m rules_engine.cli activate MIN_TAX_COLLECTED 2 --from 2027-01-01 --actor alice
 ```
 
-Version 1 still decides assessments before 1 January 2027. `WHT_AS_OF=2026-11-07 make grant` reruns that date and gets the same rules.
+That command only updates the database. The engine then resolves the version from the assessment date: `MIN_TAX_COLLECTED:v1` (100,000,000) before 1 January 2027, and version 2 from that date. The grant table is whatever the last `make grant` wrote, so lookups keep returning version 1 until a grant run whose assessment date is on or after 1 January 2027. A run before that date still writes version 1, even though version 2 is already activated. The daily DAG runs `make grant` at 02:00, which is that rerun on the first morning the new version is in force. `WHT_AS_OF=2026-11-07 make grant` reruns an earlier date and writes version 1 again.
 
 `python -m rules_engine.cli retire MIN_PAYMENTS --from 2027-07-01 --actor alice` ends the rule. It keeps applying through the day before that date, then the code cannot be used again.
 
-### 5. Switch the code on in the cycle
+### 5. Enable the code in the cycle
 
-The grant applies a code when the cycle lists it with `enabled: true` and a version of that code is in force. The cycle lists codes in order. Thresholds, operators, and versions stay on the registered rule.
+Enabling is the config half of the decision. Each cycle has its own list of codes, in order, each with `enabled: true` or `enabled: false`. The list asks for a code. It does not set the threshold, the operator, or the version; those stay on the activated rule.
 
-Cycles follow the financial year, which starts on 1 July. `wht_2026_27_h1` runs from 1 July to 31 December 2026 (Q1 and Q2). `wht_2026_27_h2` runs from 1 January to 30 June 2027 (Q3 and Q4). The run date picks the cycle and is the assessment date. `WHT_AS_OF` reruns an earlier date. `WHT_CYCLE` names a cycle directly, and the assessment date is held inside that cycle's window. A date with no covering cycle stops the run until that cycle is added. Config currently defines `wht_2026_27_h1` only.
+A code can be active in the database while this cycle leaves it out, and the grant skips it. A code can be enabled here before any version is in force on the assessment date, and `make grant` refuses to run. Both have to hold.
 
-`make rules-migrate` registers and activates five rules, all in force from 1 July 2026. `wht_2026_27_h1` switches every one of them on:
+Cycles follow the financial year, which starts on 1 July. `wht_2026_27_h1` runs from 1 July to 31 December 2026 (Q1 and Q2). `wht_2026_27_h2` runs from 1 January to 30 June 2027 (Q3 and Q4). The run date picks the cycle and is the assessment date. `WHT_AS_OF` reruns an earlier date. `WHT_CYCLE` names a cycle directly, and the assessment date is held inside that cycle's window. A date with no covering cycle stops the run until that cycle is added. Config defines both `wht_2026_27_h1` and `wht_2026_27_h2`, and each enables the same five codes.
+
+`make rules-migrate` activates five rules in the database, all in force from 1 July 2026. h1 enables every one of them, so a grant inside h1 uses version 1 of each:
 
 | Code | Feature | Test |
 |---|---|---|
@@ -202,7 +206,9 @@ Cycles follow the financial year, which starts on 1 July. `wht_2026_27_h1` runs 
 | `RETURNS_FILED` | `returns_filed_count` | greater than 0 |
 | `MIN_TAX_COLLECTED` | `tax_collected` | at least 100,000,000 |
 
-Turning another code on is a config change:
+`MIN_TAX_COLLECTED:v2` does not need a second enable inside h1. h1 already enables the code, and the assessment date still selects version 1. h2 enables the same code on its own list. A grant on or after 1 January 2027 uses h2, and the database supplies version 2 because of that date. Enabling the code in h2 does not create the version.
+
+A new code is enabled by adding it to the cycle that should apply it:
 
 ```yaml
 - code: MIN_PAYMENTS
@@ -235,7 +241,7 @@ The ingest label is a lighter pass over the same engine. It drops a cycle code t
 
 ### 7. Look up the decision
 
-`POST /grant` finds the TIN in the grant table and loads each `CODE:vN` from PostgreSQL. It rebuilds the check (feature, source table, operator, actual value, expected value, outcome, reason, legal reference) and checks that those outcomes still match the stored status and decision. A ranker score and tier are attached when `make score` has written them. The score ranks similarity to taxpayers who passed the checklist. The decision stays the grant decision.
+`POST /grant` reads the table from the last `make grant`. It does not activate rules, read the cycle, or score the taxpayer again. It loads each stored `CODE:vN` from PostgreSQL, rebuilds the check (feature, source table, operator, actual value, expected value, outcome, reason, legal reference), and checks that those outcomes still match the stored status and decision. A ranker score and tier are attached when `make score` has written them. The score ranks similarity to taxpayers who passed the checklist. The decision stays the one written in the grant table.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8001/grant \
@@ -281,9 +287,24 @@ python -m rules_engine.cli runs
 
 ## Rule migrations
 
-`src/rules_engine/migrations/V001__baseline.yaml` is the shipped checklist. Later changes are the next file, `V002__short_name.yaml`, and are never an edit of an applied file. `make rules-migrate` applies pending files in order. Each file is one transaction: every change in it is registered and activated, or nothing from that file is stored. The person who runs the command is recorded as the one who registered each rule. The file number is not a rule version. `V002` may create `MIN_TAX_COLLECTED:v2`.
+`src/rules_engine/migrations/V001__baseline.yaml` is the shipped checklist. Later changes are the next file, `V002__short_name.yaml`, and are never an edit of an applied file. `make rules-migrate` applies pending files in order. Each file is one transaction: every change in it is registered and activated in the database, or nothing from that file is stored. The person who runs the command is recorded as the one who registered each rule. The file number is not a rule version.
 
-A change in the file needs `rule_code`, `title`, `description`, `feature_name`, `operator`, `expected_value` when the operator takes one, `effective_from`, and a `reason`. `mandatory` defaults to true. `legal_reference` is optional. A retirement is `rule_code`, `effective_from` (the date it stops), `reason`, and `retire: true`.
+Raising the tax collected minimum from 1 January 2027 is `src/rules_engine/migrations/V002__raise_min_tax.yaml`. Applying it activates `MIN_TAX_COLLECTED:v2`. It does not change h1's list, and it does not rewrite the grant table.
+
+```yaml
+description: Raise the tax collected minimum from 1 January 2027
+changes:
+  - rule_code: MIN_TAX_COLLECTED
+    title: Tax collected at least 150M
+    description: Total tax paid is at least UGX 150,000,000
+    feature_name: tax_collected
+    operator: gte
+    expected_value: 150000000
+    effective_from: 2027-01-01
+    reason: Policy memo 12/2026
+```
+
+The same `changes` list can add a new code, which becomes `v1` of that code, or end one. A new change needs `rule_code`, `title`, `description`, `feature_name`, `operator`, `expected_value` when the operator takes one, `effective_from`, and a `reason`. `mandatory` defaults to true. `legal_reference` is optional. A retirement is `rule_code`, `effective_from` (the date it stops), `reason`, and `retire: true`. A new code still has to be enabled in the cycle that should apply it. The grant table picks up the new version on the next `make grant` whose assessment date falls in that version's window.
 
 `python -m rules_engine.cli migrations` shows which files are applied. A database that already has rules entered by hand cannot replay `V001`. Record that file as already applied, then run later files:
 

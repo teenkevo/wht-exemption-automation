@@ -28,6 +28,20 @@ checklist:
           enabled: true
         - code: MIN_TAX_COLLECTED
           enabled: true
+    wht_2026_27_h2:
+      start: 2027-01-01
+      end: 2027-06-30
+      rules:
+        - code: REGISTERED
+          enabled: true
+        - code: EXISTING_TAXPAYER
+          enabled: true
+        - code: NO_OUTSTANDING_LIABILITY
+          enabled: true
+        - code: RETURNS_FILED
+          enabled: true
+        - code: MIN_TAX_COLLECTED
+          enabled: true
 # Where checklist rules, approvals, and the audit trail live. RULES_DB_URL
 # replaces the dsn in a deployment. type: memory replays
 # src/rules_engine/catalog.py without a database, for tests and offline runs.
