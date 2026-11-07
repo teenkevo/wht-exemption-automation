@@ -1,40 +1,40 @@
 # WHT exemption automation
 
-Load, grant, rank, and lookup for withholding-tax exemption. This directory is the production layout for that project. `src/wht_exemption` in the parent repository stays as the project under development and is not imported from here.
+Load taxpayers, apply a versioned checklist, rank similarity, and look up the result. The grant decision comes from the rules in force on the assessment date. A ranker score can sit beside that decision.
 
-`make features` registers the snapshot in Feast. `make materialize` copies each TIN into the Redis online store. `POST /predict` reads one TIN's features from Redis and scores them with the model named in `serving.model_name`. The served decision is `POST /grant`, from the batch grant table, with the evidence for every rule. A ranker score can sit beside that decision and does not change it.
+PostgreSQL is the system of record for rules. A cycle in `config/config.yaml` switches those rules on or off by code. `make grant` computes each rule's feature, writes one row per TIN, and records which versions it used. `POST /grant` reads that row and rebuilds the evidence from those versions.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `config/` | Exemption cycles, lake source paths, and Spark settings |
-| `src/data_engineering/` | Build `wht_base_v1` from seven lake tables, then keep one row per TIN |
-| `src/rules_engine/` | Checklist rules, the features they read, the PostgreSQL store, the engine, and the CLI |
-| `src/features/` | Leakage-safe ranker features and the Feast registry. There is no second entity |
+| `config/` | Cycles, lake paths, Spark and serving settings |
+| `src/data_engineering/` | Join seven lake tables into `wht_base_v1`, then keep one row per TIN |
+| `src/rules_engine/` | Rule definitions, the features they read, PostgreSQL, the engine, migrations, and the CLI |
+| `src/features/` | Leakage-safe ranker features and the Feast registry |
 | `src/training/` | Random forest, logistic regression, and gradient-boosted trees |
-| `src/inference/` | Grant table and batch ranker scores |
+| `src/inference/` | Batch grant table and batch ranker scores |
 | `api/` | Health, grant lookup, checklist rules, and online ranker scoring |
 | `feature_store/` | Feast view registered from the ranker snapshot |
 | `dags/` | Daily load, features, and grant; weekly training; daily scores |
 
 ## What runs today
 
-1. `make ingest` reads registration, ledger, payments, EFRIS, sector, customs headers, and filed returns. Registration is the spine. Each other source becomes one row per TIN. Sector duplicates keep one activity code. The checklist label (`wht_eligible`) from the rules engine is stored on the table.
-2. `make features` writes the ranker snapshot under `data/features` and registers that view in Feast. Redis must be running: `make redis-up`.
+1. `make ingest` reads registration, ledger, payments, EFRIS, sector, customs headers, and filed returns. Registration is the spine. Each other source becomes one row per TIN. Sector duplicates keep one activity code. The checklist label (`wht_eligible`) is 1 when every mandatory rule in force passes. Review counts as not eligible yet. Four audit flags (`is_registered`, `is_existing_taxpayer`, `no_outstanding_liability`, `has_filed_returns`) are written when that rule is in the cycle and in force. A code the cycle names that has no version yet is left out of the label.
+2. `make features` writes the ranker snapshot under `data/features` and registers that view in Feast. The label is the stored `wht_eligible`. Columns the checklist reads are kept out of the model inputs. Redis must be running: `make redis-up`.
 3. `make materialize` copies the snapshot into Redis at `localhost:6379`. It writes 100,000 TINs per batch and prints progress. About 6.6 million TINs take roughly six minutes and 5 GB of Redis memory. `REDIS_URL` points a deployment at another Redis. `online_store.type: sqlite` in `config.yaml` keeps a local file instead.
-4. `make grant` runs the rules engine over every TIN and writes one row each: the feature behind every rule, each rule's outcome (PASS, FAIL, or REVIEW), the checklist status, the decision, and the rule versions used. Rules come from the PostgreSQL rules database, and each run is recorded there. A mandatory FAIL makes the taxpayer NOT ELIGIBLE. A missing value sends the rule to REVIEW and the taxpayer to NEEDS REVIEW. A TIN with no rows in a fact table counts as zero for that table's counts and amounts. Cycles in `config/config.yaml` follow the financial year, which starts on 1 July: `wht_2026_27_h1` runs from 1 July to 31 December 2026 (Q1 and Q2), and `wht_2026_27_h2` runs from 1 January to 30 June 2027 (Q3 and Q4). The run date picks the cycle and is the assessment date. `WHT_AS_OF` reruns an earlier date and `WHT_CYCLE` names a cycle directly.
+4. `make grant` runs the rules engine over every TIN and writes `data/grants/wht_grants.parquet`. Each row has the feature behind every rule, each rule's outcome (`PASS`, `FAIL`, or `REVIEW`), the checklist status, the decision, and the rule versions used (`CODE:vN`). A summary with counts only is written to `artifacts/wht_grant_summary.json`, and a row is added to `checklist_runs`. Rules come from PostgreSQL. `make grant` stops before Spark starts if any switched-on code has no version in force on the assessment date, including a misspelled code.
 5. `make train` fits the three models. Reports contain counts, not TINs.
-6. `make score` writes a similarity score and a High, Medium, or Low tier.
-7. `make serve` looks up the grant table on port 8001 and serves the checklist rules API.
+6. `make score` writes a similarity score and a High, Medium, or Low tier to `data/scores/wht_scores.parquet`.
+7. `make serve` looks up the grant table on port 8001, serves the checklist rules API, and scores one TIN from Redis when a model is loaded.
 
 `WHT_MODE` is `local` or `remote`. Remote reads the seven lake tables in `config.yaml`, joins them, and saves `data/delta/wht_base_v1`. Local skips the lake. Features, the grant, training, and scores read that saved table in either mode. The cluster sets `WHT_MODE=remote` in `config/airflow.env`.
 
-The daily DAG loads the taxpayers, registers the features, and materializes them at 02:00. The grant is built from that same run. Training is weekly. Batch scores run at 06:00.
+The daily DAG `wht_features_daily` runs at 02:00: load, then features, then Redis materialization. The grant is built from the same run, after features, and reads the taxpayer table. Training (`wht_train_weekly`) is Sunday at 04:00. Batch scores (`wht_batch_score_daily`) run at 06:00.
 
 ## Local run
 
-Python 3.11, Java 17, and Docker are required. Redis and PostgreSQL run in Docker from `docker-compose.yaml`. Redis and needs about 5 GB free in Docker Desktop's memory limit (Settings → Resources) for the full load.
+Python 3.11, Java 17, and Docker are required. Redis and PostgreSQL run in Docker from `docker-compose.yaml`. The full Redis load needs about 5 GB free in Docker Desktop's memory limit (Settings → Resources).
 
 ```bash
 python3.11 -m venv .venv
@@ -43,50 +43,131 @@ make install
 make redis-up
 make rules-db-up
 make rules-db-init
+make rules-migrate
 make test
 make serve
 ```
+
+`make rules-db-init` creates the schema and leaves it empty. `make rules-migrate` loads the shipped checklist (`V001__baseline.yaml`) and activates its five rules from 1 July 2026. `make rules` prints the rules in force today.
 
 ```bash
 curl -s http://127.0.0.1:8001/health
 curl -s http://127.0.0.1:8001/ready
 curl -s -X POST http://127.0.0.1:8001/grant -H 'Content-Type: application/json' -d '{"tin":"<TIN>"}'
 curl -s -X POST http://127.0.0.1:8001/predict -H 'Content-Type: application/json' -d '{"entity_id":"<TIN>"}'
+curl -s http://127.0.0.1:8001/api/v1/checklist/rules/active
 ```
 
-`/ready` stays unavailable until `make grant` has written the table. `/grant` returns 503 while the rules database is down. `/predict` needs `make materialize`, `make train`, Redis, and Java 17 in `JAVA_HOME`. The server loads the model into a single-core local Spark session at startup, which takes about six seconds; each request then takes about a quarter of a second. It returns 404 for a TIN missing from Redis and 503 when Redis or the model is not available.
+`/ready` stays unavailable until `make grant` has written the table. `/grant` returns 503 while the rules database is down, because the lookup rebuilds each check from the stored rule version. `/predict` needs `make materialize`, `make train`, Redis, and Java 17 in `JAVA_HOME`. The server loads the model into a single-core local Spark session at startup, which takes about six seconds; each request then takes about a quarter of a second. It returns 404 for a TIN missing from Redis and 503 when Redis or the model is not available. `make feast-ui` opens the Feast UI at `http://127.0.0.1:8888`.
 
-## Checklist rules
+## How a rule becomes a decision
 
-A rule names a feature, an operator, and an expected value. It has no code of its own.
+A rule names a feature, an operator, and an expected value. It has no code of its own. The same version and the same PASS, FAIL, and REVIEW logic run for one taxpayer and for the Spark grant.
 
-| File | Role |
-|---|---|
-| `src/rules_engine/rule_models.py` | Rule definition, rule result, statuses, operators, audit events |
-| `src/rules_engine/validators.py` | Checks a rule against its feature before activation; PASS, FAIL, or REVIEW for one taxpayer and the same logic as a Spark column |
-| `src/rules_engine/registry.py` | The lifecycle checks, plus an in-memory registry for tests and offline runs |
-| `src/rules_engine/db/` | The PostgreSQL registry (`postgres_registry.py`) and its schema (`schema.sql`) |
-| `src/rules_engine/feature_computations/` | Where each feature's data comes from and how it is computed |
-| `src/rules_engine/cli.py` | Register, activate, retire, and inspect rules (`make rules`) |
-| `src/rules_engine/engine.py` | Applies the versions in force on a date to one taxpayer or to the whole table |
-| `src/rules_engine/catalog.py` | Opens the rules database. It ships with no rules |
-| `src/rules_engine/cycles.py` | Which rules each exemption cycle switches on |
+```text
+feature in code
+    → register a DRAFT (CLI, API, or a migration file)
+    → another person may approve it
+    → activate it from a date
+    → the cycle switches that code on
+    → make grant writes one row per TIN
+    → POST /grant returns the decision and the evidence
+```
 
-### Rules database
+### 1. The feature already exists
 
-PostgreSQL 16 at `postgresql://wht:wht@localhost:5432/wht_rules` (`rules_store` in `config.yaml`; `RULES_DB_URL` in a deployment) is the system of record. `make rules-db-init` creates the schema and leaves it empty. Rules are registered with the CLI or the checklist API. A cycle in `config.yaml` names the codes to switch on. `make grant` refuses to run if any switched-on code has no version in force on the assessment date, including a misspelled code. It does not write a grant table in that case.
+Rules only name a feature. They never read raw columns. Features live in `src/rules_engine/feature_computations/` and are computed from the joined taxpayer table when the grant runs. A count or an amount with no source rows for that TIN becomes zero. A registration value that is missing stays null, and the rule goes to REVIEW.
 
-A version moves DRAFT → ACTIVE, then SUPERSEDED when a newer version takes over or RETIRED when the rule ends. The database itself enforces this, so a direct SQL session gets the same answer as the app:
+| Feature | Kind | Source | When the TIN has no source rows |
+|---|---|---|---|
+| `registration_status` | text | registration | REVIEW |
+| `taxpayer_status` | text | registration | REVIEW |
+| `business_age_years` | number | registration | REVIEW |
+| `returns_filed_count` | number | filed returns | 0 |
+| `declared_tax_total` | number | filed returns | 0 |
+| `tax_collected` | number | payments | 0 |
+| `payments_count` | number | payments | 0 |
+| `outstanding_liability` | number | ledger | 0 |
+| `waiver_received` | number | ledger | 0 |
+| `efris_sales_total` | number | EFRIS | 0 |
+| `efris_invoice_count` | number | EFRIS | 0 |
+| `customs_red_lane_count` | number | customs | 0 |
 
-- A version is never edited or deleted. A change is a new version.
-- The person who registered a draft can activate it.
-- Versions of one rule never overlap in time, and only one is ACTIVE.
-- A start date is never moved or backdated before the current version.
-- A retired code cannot be registered again.
-- Every change writes a row to `rule_audit`: action, who (`--actor`, or the database user for direct SQL), why (`--reason`), and the row before and after. `rule_audit` and `checklist_runs` are append-only.
-- Each `make grant` adds a row to `checklist_runs` with the cycle, assessment date, rule versions, and counts.
+A requirement that needs data none of these provide starts as a new `FeatureDefinition` in the module for that area (`registration_compliance`, `filing_compliance`, `payment_compliance`, `trade_compliance`), or in a new module added to `_MODULES`. The computation reads columns that `make ingest` already puts on the joined table. `register` refuses the rule until that feature exists and is active, and until the operator fits the feature's kind.
 
-Changing a threshold, for example raising the tax collected minimum from 1 January 2027:
+| Operator | Expected value | Use |
+|---|---|---|
+| `eq`, `ne` | one value of the feature's kind | equality |
+| `gt`, `gte`, `lt`, `lte` | a number | thresholds |
+| `in`, `not_in` | a non-empty list of the feature's kind | membership |
+| `is_true`, `is_false` | omitted | a true/false feature |
+
+### 2. Register a draft
+
+`make rules-db-up` then `make rules-db-init` prepares PostgreSQL at `postgresql://wht:wht@localhost:5432/wht_rules` (`rules_store` in `config.yaml`; `RULES_DB_URL` in a deployment). The CLI and the API both call the same registry.
+
+A rule file holds one rule. The registry assigns the version, the status, the dates, and who created it. The file must not set `version`, `status`, `effective_from`, `effective_to`, `created_by`, or `approved_by`.
+
+```bash
+cat > min_payments.yaml <<'YAML'
+rule_code: MIN_PAYMENTS
+title: At least one payment
+description: At least one payment is on record
+feature_name: payments_count
+operator: gt
+expected_value: 0
+mandatory: true
+YAML
+python -m rules_engine.cli register min_payments.yaml --actor alice --reason "Policy memo 12/2026"
+```
+
+`--rm` deletes the file after the draft is stored. `--actor` defaults to `WHT_ACTOR` or the login name. `--reason` is stored in the audit trail.
+
+That prints `MIN_PAYMENTS:v1` as `DRAFT`. The same call over HTTP:
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/api/v1/checklist/rules \
+  -H 'Content-Type: application/json' \
+  -H 'X-Actor: alice' \
+  -H 'X-Reason: Policy memo 12/2026' \
+  -d '{"rule_code":"MIN_PAYMENTS","title":"At least one payment","description":"At least one payment is on record","feature_name":"payments_count","operator":"gt","expected_value":0}'
+```
+
+A second register of the same code creates the next version (`v2`, then `v3`). A retired code cannot be registered again. Use a new code.
+
+### 3. Approve, when a second person signs off
+
+The person who registered a draft may activate it. Approval is optional and must be someone else. The database rejects self-approval.
+
+```bash
+python -m rules_engine.cli approve MIN_PAYMENTS 1 --actor bob --reason "Checked against the memo"
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/api/v1/checklist/rules/MIN_PAYMENTS/versions/1/approve \
+  -H 'X-Actor: bob' -H 'X-Reason: Checked against the memo'
+```
+
+The version is then `APPROVED` and still not in force. A draft can skip this step and go straight to activate.
+
+### 4. Activate from a date
+
+Activation puts that version in force from a date. The previous active version of the same code becomes `SUPERSEDED` and stops applying on that date. The end date is exclusive, so an assessment on the start date uses the new version, and an assessment the day before still uses the old one.
+
+```bash
+python -m rules_engine.cli activate MIN_PAYMENTS 1 --from 2026-07-01 --actor alice
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/api/v1/checklist/rules/MIN_PAYMENTS/versions/1/activate \
+  -H 'Content-Type: application/json' \
+  -H 'X-Actor: alice' \
+  -d '{"effective_from":"2026-07-01"}'
+```
+
+A start date is never moved, and a new version cannot start on or before the version it replaces. Versions of one rule never overlap, and only one is `ACTIVE`.
+
+Raising a threshold is a new version of the same code, not an edit:
 
 ```bash
 cat > min_tax_v2.yaml <<'YAML'
@@ -95,17 +176,114 @@ title: Tax collected at least 150M
 description: Total tax paid is at least UGX 150,000,000
 feature_name: tax_collected
 operator: gte
-expected_value: 150000000.0
+expected_value: 150000000
 YAML
 python -m rules_engine.cli register min_tax_v2.yaml --actor alice --reason "Policy memo 12/2026" --rm
 python -m rules_engine.cli activate MIN_TAX_COLLECTED 2 --from 2027-01-01 --actor alice
 ```
 
-Version 1 still decides assessments before 1 January 2027, so reruns of earlier dates give the same answer. `python -m rules_engine.cli retire CODE --from DATE` ends a rule. `list --on DATE`, `history CODE`, `audit [CODE]`, and `runs` show the state and the trail. A new rule code also needs switching on in the cycle in `config.yaml`. A requirement that needs new data starts with a feature in `src/rules_engine/feature_computations/`, which must read a column on the joined table. `register` refuses the rule until that feature exists.
+Version 1 still decides assessments before 1 January 2027. `WHT_AS_OF=2026-11-07 make grant` reruns that date and gets the same rules.
 
-### Rule migrations
+`python -m rules_engine.cli retire MIN_PAYMENTS --from 2027-07-01 --actor alice` ends the rule. It keeps applying through the day before that date, then the code cannot be used again.
 
-`src/rules_engine/migrations/V001__baseline.yaml` is the shipped checklist. Later changes are the next file, `V002__short_name.yaml`, and are never an edit of an applied file. `make rules-migrate` applies pending files in order. Each file is one transaction: every rule in it is registered and activated, or nothing from that file is stored. The file number is not a rule version. The person who runs the command is recorded as the one who registered each rule.
+### 5. Switch the code on in the cycle
+
+The grant applies a code when the cycle lists it with `enabled: true` and a version of that code is in force. The cycle lists codes in order. Thresholds, operators, and versions stay on the registered rule.
+
+Cycles follow the financial year, which starts on 1 July. `wht_2026_27_h1` runs from 1 July to 31 December 2026 (Q1 and Q2). `wht_2026_27_h2` runs from 1 January to 30 June 2027 (Q3 and Q4). The run date picks the cycle and is the assessment date. `WHT_AS_OF` reruns an earlier date. `WHT_CYCLE` names a cycle directly, and the assessment date is held inside that cycle's window. A date with no covering cycle stops the run until that cycle is added. Config currently defines `wht_2026_27_h1` only.
+
+`make rules-migrate` registers and activates five rules, all in force from 1 July 2026. `wht_2026_27_h1` switches every one of them on:
+
+| Code | Feature | Test |
+|---|---|---|
+| `REGISTERED` | `registration_status` | equals `REGD` |
+| `EXISTING_TAXPAYER` | `taxpayer_status` | equals `Existing Taxpayer` |
+| `NO_OUTSTANDING_LIABILITY` | `outstanding_liability` | at most 0 |
+| `RETURNS_FILED` | `returns_filed_count` | greater than 0 |
+| `MIN_TAX_COLLECTED` | `tax_collected` | at least 100,000,000 |
+
+Turning another code on is a config change:
+
+```yaml
+- code: MIN_PAYMENTS
+  enabled: true
+```
+
+`make grant` then requires a version of `MIN_PAYMENTS` in force on the assessment date. Until that version is activated, the grant refuses to run.
+
+### 6. The grant evaluates every TIN
+
+`make grant` loads the versions in force for the cycle's enabled codes, computes their features, and adds:
+
+| Column | Meaning |
+|---|---|
+| one column per feature | the value the rule saw |
+| `rule_<code>` | `PASS`, `FAIL`, or `REVIEW` |
+| `failed_rules`, `review_rules`, `rules_failed_count` | codes with that outcome, including optional rules, and how many failed |
+| `checklist_status` | `PASS`, `FAIL`, or `REVIEW` |
+| `decision` | `ELIGIBLE`, `NOT ELIGIBLE`, or `NEEDS REVIEW` |
+| `rules_applied` | `CODE:vN` for every version used |
+| `cycle`, `assessment_date` | which window decided the row |
+
+A missing or unusable value is `REVIEW`. A value that meets the operator is `PASS`. Anything else is `FAIL`.
+
+A mandatory `FAIL` makes the taxpayer `NOT ELIGIBLE`. Otherwise a mandatory `REVIEW` makes the taxpayer `NEEDS REVIEW`. When every mandatory rule passes, the taxpayer is `ELIGIBLE`. Set `mandatory: false` on a rule to record its outcome without changing the status. An optional failure still appears in `failed_rules`.
+
+The grant also writes context columns (`activity_isic4_cd`, `BUSINESS_START_DT`, `REGION_NAME`, `TAX_PAYER_TYPE`) and a run row: cycle, assessment date, versions, and counts of eligible, not eligible, and needs review. `python -m rules_engine.cli runs` prints those runs.
+
+The ingest label is a lighter pass over the same engine. It drops a cycle code that has no version yet, and it stores only `wht_eligible` plus the four audit flags. The grant is the decision of record, and it refuses a missing version instead of skipping it.
+
+### 7. Look up the decision
+
+`POST /grant` finds the TIN in the grant table and loads each `CODE:vN` from PostgreSQL. It rebuilds the check (feature, source table, operator, actual value, expected value, outcome, reason, legal reference) and checks that those outcomes still match the stored status and decision. A ranker score and tier are attached when `make score` has written them. The score ranks similarity to taxpayers who passed the checklist. The decision stays the grant decision.
+
+```bash
+curl -s -X POST http://127.0.0.1:8001/grant \
+  -H 'Content-Type: application/json' \
+  -d '{"tin":"<TIN>"}'
+```
+
+A TIN missing from the table is 404. A grant table that disagrees with the rule record is 500. Rebuild it with `make grant`.
+
+## Rule lifecycle
+
+A version moves `DRAFT` → `ACTIVE`, then `SUPERSEDED` when a newer version takes over or `RETIRED` when the rule ends. `DRAFT` → `APPROVED` → `ACTIVE` is the same path with a second person in between. The database enforces this, so a direct SQL session gets the same answer as the CLI and the API:
+
+- A version is never edited or deleted. A change is a new version, numbered one past the latest.
+- New versions start as unapproved drafts, with no dates.
+- The author may activate their own draft. The approver must be someone else.
+- Versions of one rule never overlap in time, and only one is `ACTIVE`.
+- A start date is never moved or backdated before the current version.
+- A retired code cannot be registered again.
+- Every change writes a row to `rule_audit`: action, who (`--actor` or `X-Actor`, or the database user for direct SQL), why (`--reason` or `X-Reason`), and the row before and after. `rule_audit`, `checklist_runs`, and `rule_migrations` are append-only.
+
+```bash
+python -m rules_engine.cli list --on 2026-11-07
+python -m rules_engine.cli history MIN_TAX_COLLECTED
+python -m rules_engine.cli audit MIN_TAX_COLLECTED
+python -m rules_engine.cli runs
+```
+
+| File | Role |
+|---|---|
+| `src/rules_engine/rule_models.py` | Rule definition, rule result, statuses, operators, audit events |
+| `src/rules_engine/validators.py` | Checks a rule against its feature; PASS, FAIL, or REVIEW for one taxpayer and the same logic as a Spark column |
+| `src/rules_engine/registry.py` | Lifecycle checks, plus an in-memory registry for tests and offline runs |
+| `src/rules_engine/db/` | The PostgreSQL registry (`postgres_registry.py`) and its schema (`schema.sql`) |
+| `src/rules_engine/feature_computations/` | Where each feature's data comes from and how it is computed |
+| `src/rules_engine/migrations/` | Ordered checklist files, applied once |
+| `src/rules_engine/cli.py` | Register, approve, activate, retire, and inspect rules |
+| `src/rules_engine/engine.py` | Applies the versions in force on a date to one taxpayer or to the whole table |
+| `src/rules_engine/catalog.py` | Opens the rules database. It ships with no rules of its own |
+| `src/rules_engine/cycles.py` | Which codes each exemption cycle switches on |
+
+`rules_store.type: memory` (`RULES_STORE=memory`) replays `catalog.py`, which is empty unless a test passes its own changes. Tests use that registry. `tests/integration/test_rules_postgres.py` runs against a scratch `wht_rules_test` database and is skipped when PostgreSQL is not running.
+
+## Rule migrations
+
+`src/rules_engine/migrations/V001__baseline.yaml` is the shipped checklist. Later changes are the next file, `V002__short_name.yaml`, and are never an edit of an applied file. `make rules-migrate` applies pending files in order. Each file is one transaction: every change in it is registered and activated, or nothing from that file is stored. The person who runs the command is recorded as the one who registered each rule. The file number is not a rule version. `V002` may create `MIN_TAX_COLLECTED:v2`.
+
+A change in the file needs `rule_code`, `title`, `description`, `feature_name`, `operator`, `expected_value` when the operator takes one, `effective_from`, and a `reason`. `mandatory` defaults to true. `legal_reference` is optional. A retirement is `rule_code`, `effective_from` (the date it stops), `reason`, and `retire: true`.
 
 `python -m rules_engine.cli migrations` shows which files are applied. A database that already has rules entered by hand cannot replay `V001`. Record that file as already applied, then run later files:
 
@@ -116,9 +294,9 @@ python -m rules_engine.cli migrate
 
 A checksum mismatch means an applied file was edited. Add a new file instead. A fresh database runs `make rules-migrate` and starts at `V001`.
 
-### Checklist API
+## Checklist API
 
-`make serve` exposes the same operations as the rules CLI at `/api/v1/checklist`. A write sends the person in `X-Actor` and the reason in `X-Reason`. A draft is activated directly.
+`make serve` exposes the same operations as the rules CLI at `/api/v1/checklist`. A write sends the person in `X-Actor` and the reason in `X-Reason`.
 
 | Method and path | What it does |
 |---|---|
@@ -128,9 +306,18 @@ A checksum mismatch means an applied file was edited. Add a new file instead. A 
 | `GET /audit?code=&limit=` | Who changed what, and why |
 | `GET /runs?limit=` | Grant runs and the versions they used |
 | `POST /rules` | Register the next DRAFT version |
-| `POST /rules/{code}/versions/{version}/activate` | Put a draft in force from a date |
+| `POST /rules/{code}/versions/{version}/approve` | Another person signs the draft off |
+| `POST /rules/{code}/versions/{version}/activate` | Put a draft or an approved version in force from `effective_from` |
 | `POST /rules/{code}/retire` | Stops applying on `effective_from` |
 
-The rules database answers 503 while it is down. A refused change answers 422, and a change the database constraints reject answers 409.
+The rules database answers 503 while it is down. A refused change answers 422. A missing version answers 404. A change the database constraints reject answers 409.
 
-Tests use the in-memory registry (`RULES_STORE=memory`). `tests/integration/test_rules_postgres.py` runs against a scratch `wht_rules_test` database and is skipped when PostgreSQL is not running.
+## Serving routes
+
+| Method and path | What it does |
+|---|---|
+| `GET /health` | Process is up |
+| `GET /ready` | The grant table can answer a lookup. Includes the cycle |
+| `POST /grant` | Decision, checklist, and the evidence for every rule. Optional score and tier |
+| `POST /predict` | Ranker score for one TIN from Redis. `serving.model_name` chooses the model |
+| `GET /models` | Models on disk and the one configured for serving |
