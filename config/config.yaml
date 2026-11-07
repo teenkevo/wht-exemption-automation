@@ -23,7 +23,7 @@ checklist:
         - code: EXISTING_TAXPAYER
           enabled: true
         - code: NO_OUTSTANDING_LIABILITY
-          enabled: true
+          enabled: false
         - code: RETURNS_FILED
           enabled: true
         - code: MIN_TAX_COLLECTED
