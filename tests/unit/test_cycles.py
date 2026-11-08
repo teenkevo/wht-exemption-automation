@@ -41,6 +41,17 @@ def test_run_date_selects_the_cycle_and_switches_rules_off():
     assert "MIN_TAX_COLLECTED" not in cycle.rule_codes
 
 
+def test_a_cycle_without_config_uses_the_financial_half_name():
+    cycle = resolve_cycle({}, known_rules=KNOWN, as_of=date(2026, 11, 7))
+    assert cycle.id == "wht_2026_27_h1"
+    assert (cycle.start, cycle.end) == (date(2026, 7, 1), date(2026, 12, 31))
+
+
+def test_a_named_fallback_must_be_the_half_that_contains_the_date():
+    with pytest.raises(ValueError, match="wht_2026_27_h2 should run from 2027-01-01 to 2027-06-30"):
+        resolve_cycle({}, known_rules=KNOWN, as_of=date(2026, 11, 7), cycle_id="wht_2026_27_h2")
+
+
 def test_missing_cycle_names_the_one_to_add():
     with pytest.raises(ValueError, match="Add wht_2026_27_h2 from 2027-01-01 to 2027-06-30"):
         resolve_cycle(_config(wht_2026_27_h1=H1), known_rules=KNOWN, as_of=date(2027, 2, 1))
@@ -51,7 +62,8 @@ def test_missing_cycle_names_the_one_to_add():
     [
         ({"wht_2026_27_h1": {**H1, "end": "2026-12-30"}}, "should run from 2026-07-01 to 2026-12-31"),
         ({"wht_2026_28_h1": H1}, "should name financial year 2026_27"),
-        ({"wht_2026_27_h1": H1, "special": {"start": "2026-12-01", "end": "2027-01-15", "rules": H1["rules"]}}, "overlap"),
+        ({"special": H1}, "must be named wht_YYYY_YY_h1 or wht_YYYY_YY_h2"),
+        ({"wht_2026_27_h3": H1}, "must be named wht_YYYY_YY_h1 or wht_YYYY_YY_h2"),
         ({"wht_2026_27_h1": {**H1, "rules": _rules(*DEFAULT_RULES, off=DEFAULT_RULES)}}, "no enabled rules"),
         (
             {"wht_2026_27_h1": {**H1, "rules": [{"code": "MIN_TAX_COLLECTED", "expected_value": 1}]}},

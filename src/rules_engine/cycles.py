@@ -1,10 +1,12 @@
 """Exemption cycles: which registered rules are switched on, and when.
 
-Cycles follow the financial year, which starts on 1 July. Financial year
-2026/27 has two cycles: ``wht_2026_27_h1`` from 1 July to 31 December 2026
-(Q1 and Q2), and ``wht_2026_27_h2`` from 1 January to 30 June 2027 (Q3 and Q4).
-The run date picks the cycle and is the assessment date for the rules.
-``WHT_AS_OF`` changes that date for a rerun. ``WHT_CYCLE`` names a cycle directly.
+Every cycle id is ``wht_YYYY_YY_h1`` or ``wht_YYYY_YY_h2``. ``YY`` is the next
+year. ``h1`` runs 1 July to 31 December of ``YYYY``, and ``h2`` runs 1 January
+to 30 June of the following year. Financial year 2026/27 is ``wht_2026_27_h1``
+(1 July to 31 December 2026, Q1 and Q2) and ``wht_2026_27_h2`` (1 January to
+30 June 2027, Q3 and Q4). The run date picks the cycle and is the assessment
+date for the rules. ``WHT_AS_OF`` changes that date for a rerun. ``WHT_CYCLE``
+names a cycle directly.
 
 A cycle only switches rules on or off by code. A code applies once a version
 is in force in the rules database. Thresholds are set when the rule is registered.
@@ -75,6 +77,25 @@ def _as_date(value: object, cycle_id: str, field: str) -> date:
     raise ValueError(f"Checklist cycle {cycle_id} needs {field} as a date such as 2026-07-01")
 
 
+def _require_cycle_name(cycle_id: str, start: date, end: date) -> None:
+    """The id is ``wht_YYYY_YY_h1`` or ``wht_YYYY_YY_h2``, and the dates are that half."""
+    named = _CYCLE_NAME.match(str(cycle_id))
+    if named is None:
+        raise ValueError(
+            f"Checklist cycle {cycle_id} must be named wht_YYYY_YY_h1 or wht_YYYY_YY_h2, "
+            "for example wht_2026_27_h1"
+        )
+    start_year = int(named.group(1))
+    if int(named.group(2)) != (start_year + 1) % 100:
+        raise ValueError(
+            f"Checklist cycle {cycle_id} should name financial year "
+            f"{start_year}_{(start_year + 1) % 100:02d}"
+        )
+    expected_name, expected_start, expected_end = _financial_half(start_year, int(named.group(3)))
+    if str(cycle_id) != expected_name or (start, end) != (expected_start, expected_end):
+        raise ValueError(f"Checklist cycle {cycle_id} should run from {expected_start} to {expected_end}")
+
+
 def _cycle_dates(cycles: Mapping) -> dict[str, tuple[date, date]]:
     spans: dict[str, tuple[date, date]] = {}
     for cycle_id, body in cycles.items():
@@ -83,17 +104,7 @@ def _cycle_dates(cycles: Mapping) -> dict[str, tuple[date, date]]:
         end = _as_date(body.get("end"), cycle_id, "end")
         if end < start:
             raise ValueError(f"Checklist cycle {cycle_id} ends before it starts")
-        named = _CYCLE_NAME.match(str(cycle_id))
-        if named:
-            start_year = int(named.group(1))
-            if int(named.group(2)) != (start_year + 1) % 100:
-                raise ValueError(
-                    f"Checklist cycle {cycle_id} should name financial year "
-                    f"{start_year}_{(start_year + 1) % 100:02d}"
-                )
-            expected = _financial_half(start_year, int(named.group(3)))
-            if (start, end) != expected[1:]:
-                raise ValueError(f"Checklist cycle {cycle_id} should run from {expected[1]} to {expected[2]}")
+        _require_cycle_name(str(cycle_id), start, end)
         spans[str(cycle_id)] = (start, end)
     ordered = sorted(spans.items(), key=lambda item: item[1][0])
     for (first, (_start, first_end)), (second, (second_start, _end)) in zip(ordered, ordered[1:]):
@@ -144,7 +155,9 @@ def resolve_cycle(
     named = cycle_id or os.getenv("WHT_CYCLE")
     if not cycles:
         name, start, end = half_year(day)
-        return Cycle(str(named or name), start, end, DEFAULT_RULES)
+        chosen = str(named or name)
+        _require_cycle_name(chosen, start, end)
+        return Cycle(chosen, start, end, DEFAULT_RULES)
     spans = _cycle_dates(cycles)
     if named:
         selected = str(named)
