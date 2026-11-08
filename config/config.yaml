@@ -5,43 +5,40 @@ event_timestamp: event_timestamp
 source_format: parquet
 # Format of the seven lake tables. Used only when WHT_MODE=remote.
 lake_format: delta
-# Two exemption cycles per financial year, which starts on 1 July.
-# wht_2026_27_h1 runs 1 July to 31 December 2026 (Q1 and Q2).
-# wht_2026_27_h2 runs 1 January to 30 June 2027 (Q3 and Q4).
-# The run date picks the cycle. WHT_AS_OF=YYYY-MM-DD reruns an earlier date.
-# WHT_CYCLE names a cycle directly. Each cycle only switches catalog rules on
-# or off by code. Rules, their thresholds, and their versions are defined in
+# checklist holds the two halves of one financial year, which starts on 1 July.
+# wht_2026_27_h1 is 1 July to 31 December 2026 (Q1 and Q2).
+# wht_2026_27_h2 is 1 January to 30 June 2027 (Q3 and Q4).
+# Together they cover the whole year. The name sets each window. Do not set start or end.
+# Half names are enforced: wht_YYYY_YY_h1 or wht_YYYY_YY_h2, with YY the next year.
+# The run date picks h1 or h2. WHT_AS_OF=YYYY-MM-DD reruns an earlier date.
+# WHT_CYCLE names a half directly. Each half only switches rules on or off by
+# code. Rules, their thresholds, and their versions are defined in
 # src/rules_engine/catalog.py.
 checklist:
-  cycles:
-    wht_2026_27_h1:
-      start: 2026-07-01
-      end: 2026-12-31
-      rules:
-        - code: REGISTERED
-          enabled: true
-        - code: EXISTING_TAXPAYER
-          enabled: true
-        - code: NO_OUTSTANDING_LIABILITY
-          enabled: true
-        - code: RETURNS_FILED
-          enabled: true
-        - code: MIN_TAX_COLLECTED
-          enabled: true
-    wht_2026_27_h2:
-      start: 2027-01-01
-      end: 2027-06-30
-      rules:
-        - code: REGISTERED
-          enabled: true
-        - code: EXISTING_TAXPAYER
-          enabled: true
-        - code: NO_OUTSTANDING_LIABILITY
-          enabled: true
-        - code: RETURNS_FILED
-          enabled: true
-        - code: MIN_TAX_COLLECTED
-          enabled: true
+  wht_2026_27_h1:
+    rules:
+      - code: REGISTERED
+        enabled: true
+      - code: EXISTING_TAXPAYER
+        enabled: true
+      - code: NO_OUTSTANDING_LIABILITY
+        enabled: true
+      - code: RETURNS_FILED
+        enabled: true
+      - code: MIN_TAX_COLLECTED
+        enabled: true
+  wht_2026_27_h2:
+    rules:
+      - code: REGISTERED
+        enabled: true
+      - code: EXISTING_TAXPAYER
+        enabled: true
+      - code: NO_OUTSTANDING_LIABILITY
+        enabled: true
+      - code: RETURNS_FILED
+        enabled: true
+      - code: MIN_TAX_COLLECTED
+        enabled: true
 # Where checklist rules, approvals, and the audit trail live. RULES_DB_URL
 # replaces the dsn in a deployment. type: memory replays
 # src/rules_engine/catalog.py without a database, for tests and offline runs.

@@ -15,11 +15,11 @@ def _rules(*codes, off=()):
 
 
 def _config(**cycles):
-    return {"checklist": {"cycles": cycles}}
+    return {"checklist": cycles}
 
 
-H1 = {"start": "2026-07-01", "end": "2026-12-31", "rules": _rules(*DEFAULT_RULES)}
-H2 = {"start": "2027-01-01", "end": "2027-06-30", "rules": _rules(*DEFAULT_RULES, off=("MIN_TAX_COLLECTED",))}
+H1 = {"rules": _rules(*DEFAULT_RULES)}
+H2 = {"rules": _rules(*DEFAULT_RULES, off=("MIN_TAX_COLLECTED",))}
 
 
 def test_project_config_picks_the_cycle_for_the_run_date():
@@ -38,6 +38,7 @@ def test_run_date_selects_the_cycle_and_switches_rules_off():
     data = _config(wht_2026_27_h1=H1, wht_2026_27_h2=H2)
     cycle = resolve_cycle(data, known_rules=KNOWN, as_of=date(2027, 2, 1))
     assert cycle.id == "wht_2026_27_h2"
+    assert (cycle.start, cycle.end) == (date(2027, 1, 1), date(2027, 6, 30))
     assert "MIN_TAX_COLLECTED" not in cycle.rule_codes
 
 
@@ -60,8 +61,9 @@ def test_missing_cycle_names_the_one_to_add():
 @pytest.mark.parametrize(
     ("cycles", "message"),
     [
-        ({"wht_2026_27_h1": {**H1, "end": "2026-12-30"}}, "should run from 2026-07-01 to 2026-12-31"),
+        ({"wht_2026_27_h1": {**H1, "start": "2026-07-01", "end": "2026-12-31"}}, "The name sets the window"),
         ({"wht_2026_28_h1": H1}, "should name financial year 2026_27"),
+        ({"cycles": H1}, "Put cycle names directly under checklist"),
         ({"special": H1}, "must be named wht_YYYY_YY_h1 or wht_YYYY_YY_h2"),
         ({"wht_2026_27_h3": H1}, "must be named wht_YYYY_YY_h1 or wht_YYYY_YY_h2"),
         ({"wht_2026_27_h1": {**H1, "rules": _rules(*DEFAULT_RULES, off=DEFAULT_RULES)}}, "no enabled rules"),
@@ -73,7 +75,7 @@ def test_missing_cycle_names_the_one_to_add():
 )
 def test_cycle_config_is_checked(cycles, message):
     with pytest.raises(ValueError, match=message):
-        resolve_cycle({"checklist": {"cycles": cycles}}, known_rules=KNOWN, as_of=date(2026, 11, 7))
+        resolve_cycle({"checklist": cycles}, known_rules=KNOWN, as_of=date(2026, 11, 7))
 
 
 def test_named_cycle_is_assessed_inside_its_own_dates():
