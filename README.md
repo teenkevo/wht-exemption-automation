@@ -1,10 +1,40 @@
 # WHT exemption automation
 
-Load taxpayers, apply a versioned checklist, rank similarity, and look up the result. The grant decision comes from the rules in force on the assessment date. A ranker score can sit beside that decision.
+This project answers one question for each taxpayer: does this taxpayer qualify for a withholding-tax exemption?
 
-Two settings decide whether a rule is used, and they live in different places. **Activation** is a row in PostgreSQL: which version is in force on which dates. **Enabling** is a line in a cycle in `config/config.yaml`: whether that cycle asks for the code. The grant uses a code when the cycle for the assessment date enables it and the database has a version in force on that date.
+Uganda Revenue Authority (URA) publishes the exemption checklist to the public. That checklist is the full set of compliance checks a taxpayer must meet. This repository implements those checks as rules. A rule names one fact about the taxpayer, a comparison, and the value the check expects. How a published check becomes a rule, and how a rule is registered, activated, and enabled, is in [How a rule becomes a decision](#how-a-rule-becomes-a-decision). The five checks enabled for financial year 2026/27 are listed in [Enable the code in the cycle](#5-enable-the-code-in-the-cycle).
 
-`make grant` writes that result, one row per TIN, including the version it used (`CODE:vN`). `POST /grant` reads those rows. A new activation is stored immediately and shows up in lookups after the next `make grant`.
+## Grant decision
+
+The grant decision is the exemption answer stored for one taxpayer, identified by TIN (tax identification number). It is one of three words:
+
+| Grant decision | Meaning |
+|---|---|
+| `ELIGIBLE` | Every mandatory check passes. The exemption is granted. |
+| `NOT ELIGIBLE` | A mandatory check fails. The exemption is refused. |
+| `NEEDS REVIEW` | A mandatory check has no usable value, so the exemption is neither granted nor refused. |
+
+`make grant` applies the checks in force on the assessment date and writes one row per TIN. The row holds the grant decision, the result of every check, and the version of each check (`CODE:vN`). How that row is built is in [The grant evaluates every TIN](#6-the-grant-evaluates-every-tin).
+
+## Ranker score
+
+The ranker score is a second number stored beside the grant decision. It measures how similar a taxpayer is to taxpayers who passed the URA checklist. A high score means the taxpayer resembles those who qualified. It is not an exemption answer, and it does not change `ELIGIBLE`, `NOT ELIGIBLE`, or `NEEDS REVIEW`.
+
+`make train` fits the model. `make score` writes a score and a High, Medium, or Low tier for every TIN. `POST /predict` returns the score for one TIN. The inputs, the three models, and those two ways of producing a score are in [Ranker score](#ranker-score).
+
+## Lookup
+
+A lookup reads an answer that has already been written. It does not run the checks again. `POST /grant` takes a TIN, finds that taxpayer's row in the grant table, and returns the grant decision, the evidence for every check, and the ranker score when `make score` has written one. The request and the fields it returns are in [Look up the decision](#7-look-up-the-decision).
+
+## Which checks run
+
+A check counts toward the grant decision only when both of the following are true.
+
+**Activation** is a row in PostgreSQL. It records which version of a check is in force on which dates. A change, such as a higher threshold, is a new version with its own start date. An assessment before that date still uses the previous version.
+
+**Enabling** is a line under `wht_2026_27_h1` or `wht_2026_27_h2` in `config/config.yaml`. It says that half of the financial year includes the check. The line does not set the threshold or the version. Those stay on the activated rule.
+
+`make grant` applies a check when the half for the assessment date enables it and PostgreSQL has a version in force on that date. Activating a version stores it immediately. The grant table, and therefore a lookup, shows that version after the next `make grant` whose assessment date falls inside the version's window.
 
 ## Layout
 
@@ -33,6 +63,12 @@ Two settings decide whether a rule is used, and they live in different places. *
 `WHT_MODE` is `local` or `remote`. Remote reads the seven lake tables in `config.yaml`, joins them, and saves `data/delta/wht_base_v1`. Local skips the lake. Features, the grant, training, and scores read that saved table in either mode. The cluster sets `WHT_MODE=remote` in `config/airflow.env`.
 
 The daily DAG `wht_features_daily` runs at 02:00: load, then features, then Redis materialization. The grant is built from the same run, after features, and reads the taxpayer table. Training (`wht_train_weekly`) is Sunday at 04:00. Batch scores (`wht_batch_score_daily`) run at 06:00.
+
+## Ranker score
+
+The ranker learns which taxpayers look like the ones who passed the URA checklist. Its training label is `wht_eligible`, which is 1 only when the checklist passes. Columns the checklist itself reads are left out of the model inputs, so the score cannot copy the grant decision.
+
+`make features` writes that snapshot under `data/features` and registers it in Feast. `make materialize` copies it into Redis, which is what `POST /predict` reads. `make train` fits three models: random forest, logistic regression, and gradient-boosted trees. The model `POST /predict` uses is the random forest named in `serving.model_name`. `make score` reads the taxpayer table and writes `data/scores/wht_scores.parquet`: a score and a High, Medium, or Low tier for every TIN. `POST /predict` scores one TIN from the Redis snapshot. A lookup can attach that score and tier to the grant decision. The grant decision stays the checklist result.
 
 ## Local run
 
@@ -64,7 +100,7 @@ curl -s http://127.0.0.1:8001/api/v1/checklist/rules/active
 
 ## How a rule becomes a decision
 
-A rule names a feature, an operator, and an expected value. It has no code of its own. The same version and the same PASS, FAIL, and REVIEW logic run for one taxpayer and for the Spark grant.
+The rules in this section are the compliance checks from the public URA checklist, implemented in this repository. A rule names a feature, an operator, and an expected value. It has no code of its own. The same version and the same PASS, FAIL, and REVIEW logic run for one taxpayer and for the Spark grant.
 
 ```text
 feature in code
@@ -241,7 +277,7 @@ The ingest label is a lighter pass over the same engine. It drops a cycle code t
 
 ### 7. Look up the decision
 
-`POST /grant` reads the table from the last `make grant`. It does not activate rules, read the cycle, or score the taxpayer again. It loads each stored `CODE:vN` from PostgreSQL, rebuilds the check (feature, source table, operator, actual value, expected value, outcome, reason, legal reference), and checks that those outcomes still match the stored status and decision. A ranker score and tier are attached when `make score` has written them. The score ranks similarity to taxpayers who passed the checklist. The decision stays the one written in the grant table.
+A lookup is a read of one TIN from the grant table written by the last `make grant`. `POST /grant` loads each stored `CODE:vN` from PostgreSQL, rebuilds the check (feature, source table, operator, actual value, expected value, outcome, reason, legal reference), and checks that those outcomes still match the stored status and decision. When `make score` has written a ranker score, the response includes that score and its tier beside the grant decision. The grant decision in the response is the one stored on the row.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8001/grant \
