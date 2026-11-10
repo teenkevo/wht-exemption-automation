@@ -226,7 +226,7 @@ That command only updates the database. The engine then resolves the version fro
 
 ### 5. Enable the code in the cycle
 
-Enabling is the config half of the decision. Each cycle has its own list of codes, in order, each with `enabled: true` or `enabled: false`. The list asks for a code. It does not set the threshold, the operator, or the version; those stay on the activated rule.
+Enabling is the config half of the decision. Each cycle has its own list of codes, in order. A code in the list is enabled. Leaving a code out skips it. The list asks for a code. It does not set the threshold, the operator, or the version; those stay on the activated rule.
 
 A code can be active in the database while this cycle leaves it out, and the grant skips it. A code can be enabled here before any version is in force on the assessment date, and `make grant` refuses to run. Both have to hold.
 
@@ -247,8 +247,7 @@ A code can be active in the database while this cycle leaves it out, and the gra
 A new code is enabled by adding it to the cycle that should apply it:
 
 ```yaml
-- code: MIN_PAYMENTS
-  enabled: true
+- MIN_PAYMENTS
 ```
 
 `make grant` then requires a version of `MIN_PAYMENTS` in force on the assessment date. Until that version is activated, the grant refuses to run.

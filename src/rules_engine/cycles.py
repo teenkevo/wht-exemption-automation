@@ -9,9 +9,9 @@ year. Together they cover that whole year. Financial year 2026/27 is
 the half and is the assessment date. ``WHT_AS_OF`` changes that date for a
 rerun. ``WHT_CYCLE`` names a half directly.
 
-A half only switches rules on or off by code. The name sets the start and end.
-A code applies once a version is in force in the rules database. Thresholds
-are set when the rule is registered.
+A half lists the codes that apply. A code in the list is enabled. The name
+sets the start and end. A code applies once a version is in force in the
+rules database. Thresholds are set when the rule is registered.
 """
 
 from __future__ import annotations
@@ -114,22 +114,18 @@ def _rule_codes(selected: str, entries: object, known: set[str]) -> tuple[str, .
     codes: list[str] = []
     seen: set[str] = set()
     for raw in entries:
-        if not isinstance(raw, dict) or not raw.get("code"):
+        if isinstance(raw, Mapping):
+            raise ValueError(
+                f"Checklist cycle {selected} rules are code names. "
+                "Listing a code enables it. Thresholds are set when the rule is registered."
+            )
+        code = str(raw).strip() if isinstance(raw, str) else ""
+        if not code:
             raise ValueError(f"Checklist cycle {selected} has a rule without a code")
-        code = str(raw["code"])
         if code in seen:
             raise ValueError(f"Checklist cycle {selected} repeats rule {code}")
         seen.add(code)
-        extra = sorted(str(key) for key in raw if key not in {"code", "enabled"})
-        if extra:
-            raise ValueError(
-                f"Checklist cycle {selected} rule {code} sets {', '.join(extra)}. "
-                "Cycles only switch rules on or off. Thresholds are set when the rule is registered."
-            )
-        if bool(raw.get("enabled", True)):
-            codes.append(code)
-    if not codes:
-        raise ValueError(f"Checklist cycle {selected} has no enabled rules")
+        codes.append(code)
     return tuple(codes)
 
 

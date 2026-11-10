@@ -10,8 +10,8 @@ from rules_engine.cycles import DEFAULT_RULES, assessment_date, half_year, resol
 KNOWN = set(DEFAULT_RULES)
 
 
-def _rules(*codes, off=()):
-    return [{"code": code, "enabled": code not in off} for code in codes]
+def _rules(*codes):
+    return list(codes)
 
 
 def _config(**cycles):
@@ -19,7 +19,7 @@ def _config(**cycles):
 
 
 H1 = {"rules": _rules(*DEFAULT_RULES)}
-H2 = {"rules": _rules(*DEFAULT_RULES, off=("MIN_TAX_COLLECTED",))}
+H2 = {"rules": [code for code in DEFAULT_RULES if code != "MIN_TAX_COLLECTED"]}
 
 
 def test_project_config_picks_the_cycle_for_the_run_date():
@@ -66,7 +66,7 @@ def test_missing_cycle_names_the_one_to_add():
         ({"cycles": H1}, "Put cycle names directly under checklist"),
         ({"special": H1}, "must be named wht_YYYY_YY_h1 or wht_YYYY_YY_h2"),
         ({"wht_2026_27_h3": H1}, "must be named wht_YYYY_YY_h1 or wht_YYYY_YY_h2"),
-        ({"wht_2026_27_h1": {**H1, "rules": _rules(*DEFAULT_RULES, off=DEFAULT_RULES)}}, "no enabled rules"),
+        ({"wht_2026_27_h1": {**H1, "rules": []}}, "needs a list of rules"),
         (
             {"wht_2026_27_h1": {**H1, "rules": [{"code": "MIN_TAX_COLLECTED", "expected_value": 1}]}},
             "Thresholds are set when the rule is registered.",
