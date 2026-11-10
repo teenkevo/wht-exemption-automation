@@ -60,7 +60,18 @@ A check counts toward the grant decision only when both of the following are tru
 6. `make score` writes a similarity score and a High, Medium, or Low tier to `data/scores/wht_scores.parquet`.
 7. `make serve` looks up the grant table on port 8001, serves the checklist rules API, and scores one TIN from Redis when a model is loaded.
 
-`WHT_MODE` is `local` or `remote`. Remote reads the seven lake tables in `config.yaml`, joins them, and saves `data/delta/wht_base_v1`. Local skips the lake. Features, the grant, training, and scores read that saved table in either mode. The cluster sets `WHT_MODE=remote` in `config/airflow.env`.
+`WHT_MODE` is `local` or `remote`. Remote reads the seven lake tables in `config.yaml`, joins them, and saves `data/delta/wht_base_v1`. With `lake_access: drill`, those paths are read through Drill JDBC (`config/drill.yaml`). Drill serves each path from `dfs.root`, for example `data/lakehouse/dm_modeled/dim_taxpayer_mst`. `WHT_LAKE_ROOT` forces Delta files instead, which is how the mock lake is used. `WHT_LAKE_ACCESS=file` reads Delta at the configured paths. Local mode skips the lake. Features, the grant, training, and scores read the saved table in either mode. The cluster sets `WHT_MODE=remote` in `config/airflow.env`. `DRILL_USER`, `DRILL_PASSWORD`, and `DRILL_JDBC_JAR` are set in the environment. `make drill-check` reads one registration row and prints the column count.
+
+`make mock-lake` writes a disposable copy of those seven tables as Delta under `mock_lake/`, on the same relative paths (`dm_modeled/dim_taxpayer_mst` and the other six). The columns are the ones the load and the feature queries read. `WHT_LAKE_ROOT` points remote mode at that directory and leaves the cluster paths in `config.yaml` unchanged. `make mock-lake-rm` deletes the directory. The Delta package is the `delta` extra.
+
+```bash
+pip install -e '.[delta]'
+make mock-lake
+WHT_MODE=remote WHT_LAKE_ROOT=mock_lake make ingest
+make mock-lake-rm
+```
+
+The registration TINs are `1000000001` (eligible at both tax thresholds), `1000000002` (fails registration, liability, returns, and tax), `1000000003` (missing registration status, sent to review), `1000000004` (new taxpayer), `1000000005` (two registration rows), `1000000006` (registration only), and `1000000007` (passes the 100M tax check and fails the 150M check). `9999999999` appears only in a fact table, so the join leaves it out.
 
 The daily DAG `wht_features_daily` runs at 02:00: load, then features, then Redis materialization. The grant is built from the same run, after features, and reads the taxpayer table. Training (`wht_train_weekly`) is Sunday at 04:00. Batch scores (`wht_batch_score_daily`) run at 06:00.
 
@@ -114,7 +125,9 @@ feature in code
 
 ### 1. The feature already exists
 
-Rules only name a feature. They never read raw columns. Features live in `src/rules_engine/feature_computations/` and are computed from the joined taxpayer table when the grant runs. A count or an amount with no source rows for that TIN becomes zero. A registration value that is missing stays null, and the rule goes to REVIEW.
+Rules only name a feature. They never read raw columns. Each feature is a SELECT in `src/rules_engine/feature_migrations/`. The query reads `lakehouse.<source>` and returns `TIN_NO` plus the feature, one row per TIN. `V001__baseline.sql` holds the query in force for every feature. A later file, `V002__short_name.sql`, replaces the query for each feature it names. The latest query for that name is the one that runs. The earlier one stays on record and is not used. The file number is not the feature version: the second migration that names `tax_collected` is `tax_collected:v2`.
+
+A count or an amount with no source rows for that TIN becomes zero. A registration value that is missing stays null, and the rule goes to REVIEW.
 
 | Feature | Kind | Source | When the TIN has no source rows |
 |---|---|---|---|
@@ -131,7 +144,22 @@ Rules only name a feature. They never read raw columns. Features live in `src/ru
 | `efris_invoice_count` | number | EFRIS | 0 |
 | `customs_red_lane_count` | number | customs | 0 |
 
-A requirement that needs data none of these provide starts as a new `FeatureDefinition` in the module for that area (`registration_compliance`, `filing_compliance`, `payment_compliance`, `trade_compliance`), or in a new module added to `_MODULES`. The computation reads columns that `make ingest` already puts on the joined table. `register` refuses the rule until that feature exists and is active, and until the operator fits the feature's kind.
+A new calculation is the next SQL file. It names the feature, the kind, the lake table, and what a TIN with no source row becomes, then one SELECT. Editing the file that already holds the active query would keep the same version number, so the change is a new file:
+
+```sql
+-- feature: tax_collected
+-- description: Total tax paid, excluding reversed payments
+-- dtype: number
+-- source: payments
+-- missing: 0, no payments on record
+SELECT
+    TIN_NO,
+    cast(sum(TOT_PAYMENT_AMT) - sum(reversed_tax) as double) AS tax_collected
+FROM lakehouse.payments
+GROUP BY TIN_NO
+```
+
+Ingest registers each source and runs that query, so `FROM lakehouse.payments` reads the payments table. A TIN the query does not return becomes 0 when the missing note starts with 0, and stays null otherwise. That file makes `tax_collected:v2` the active calculation. `tax_collected:v1` stays on record and is not used. A rule that names `tax_collected` does not change. The next ingest calculates v2, and the grant writes that version on the row. `register` refuses the rule until the feature exists and is active, and until the operator fits the feature's kind. A superseded feature cannot back a new rule.
 
 | Operator | Expected value | Use |
 |---|---|---|
@@ -263,14 +291,15 @@ A new code is enabled by adding it to the cycle that should apply it:
 | `failed_rules`, `review_rules`, `rules_failed_count` | codes with that outcome, including optional rules, and how many failed |
 | `checklist_status` | `PASS`, `FAIL`, or `REVIEW` |
 | `decision` | `ELIGIBLE`, `NOT ELIGIBLE`, or `NEEDS REVIEW` |
-| `rules_applied` | `CODE:vN` for every version used |
+| `rules_applied` | `CODE:vN` for every rule version used |
+| `features_applied` | `name:vN` for every feature those rules ran |
 | `cycle`, `assessment_date` | which window decided the row |
 
 A missing or unusable value is `REVIEW`. A value that meets the operator is `PASS`. Anything else is `FAIL`.
 
 A mandatory `FAIL` makes the taxpayer `NOT ELIGIBLE`. Otherwise a mandatory `REVIEW` makes the taxpayer `NEEDS REVIEW`. When every mandatory rule passes, the taxpayer is `ELIGIBLE`. Set `mandatory: false` on a rule to record its outcome without changing the status. An optional failure still appears in `failed_rules`.
 
-The grant also writes context columns (`activity_isic4_cd`, `BUSINESS_START_DT`, `REGION_NAME`, `TAX_PAYER_TYPE`) and a run row: cycle, assessment date, versions, and counts of eligible, not eligible, and needs review. `python -m rules_engine.cli runs` prints those runs.
+The grant also writes context columns (`activity_isic4_cd`, `BUSINESS_START_DT`, `REGION_NAME`, `TAX_PAYER_TYPE`) and a run row: cycle, assessment date, the rule and feature versions, and counts of eligible, not eligible, and needs review. `python -m rules_engine.cli runs` prints those runs.
 
 The ingest label is a lighter pass over the same engine. It drops a cycle code that has no version yet, and it stores only `wht_eligible` plus the four audit flags. The grant is the decision of record, and it refuses a missing version instead of skipping it.
 
@@ -311,7 +340,8 @@ python -m rules_engine.cli runs
 | `src/rules_engine/validators.py` | Checks a rule against its feature; PASS, FAIL, or REVIEW for one taxpayer and the same logic as a Spark column |
 | `src/rules_engine/registry.py` | Lifecycle checks, plus an in-memory registry for tests and offline runs |
 | `src/rules_engine/db/` | The PostgreSQL registry (`postgres_registry.py`) and its schema (`schema.sql`) |
-| `src/rules_engine/feature_computations/` | Where each feature's data comes from and how it is computed |
+| `src/rules_engine/feature_computations/` | The feature registry rules validate against |
+| `src/rules_engine/feature_migrations/` | SELECT for each feature over `lakehouse.<source>`. The latest migration that names a feature is active |
 | `src/rules_engine/migrations/` | Ordered checklist files, applied once |
 | `src/rules_engine/cli.py` | Register, approve, activate, retire, and inspect rules |
 | `src/rules_engine/engine.py` | Applies the versions in force on a date to one taxpayer or to the whole table |

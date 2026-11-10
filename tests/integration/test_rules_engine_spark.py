@@ -131,6 +131,7 @@ def test_batch_and_single_taxpayer_checklists_agree(spark, with_extra):
     engine = RulesEngine(build_registry(rules))
     rules = engine.rules_for(DAY)
     frame = spark.createDataFrame(ROWS, schema=", ".join(f"{name} {'string' if i < 3 else 'double'}" for i, name in enumerate(RAW_COLUMNS)))
+    _register_sources(spark, ROWS)
     judged = {row["TIN_NO"]: row.asDict() for row in engine.evaluate_frame(frame, DAY).collect()}
     assert len(judged) == len(ROWS)
     for tin, row in judged.items():
@@ -146,6 +147,7 @@ def test_batch_and_single_taxpayer_checklists_agree(spark, with_extra):
 def test_missing_source_rows_count_as_zero_and_missing_status_goes_to_review(spark):
     engine = RulesEngine(build_registry(CHECKLIST))
     frame = spark.createDataFrame(ROWS, schema=", ".join(f"{name} {'string' if i < 3 else 'double'}" for i, name in enumerate(RAW_COLUMNS)))
+    _register_sources(spark, ROWS)
     judged = {row["TIN_NO"]: row for row in engine.evaluate_frame(frame, DAY).collect()}
     assert judged["T1"]["decision"] == "ELIGIBLE"
     assert judged["T2"]["returns_filed_count"] == 0.0
@@ -154,6 +156,10 @@ def test_missing_source_rows_count_as_zero_and_missing_status_goes_to_review(spa
     assert judged["T3"]["checklist_status"] == "REVIEW"
     assert judged["T3"]["review_rules"] == "REGISTERED"
     assert judged["T5"]["rule_min_tax_collected"] == "REVIEW"
+    assert judged["T1"]["features_applied"] == (
+        "registration_status:v1,taxpayer_status:v1,outstanding_liability:v1,"
+        "returns_filed_count:v1,tax_collected:v1"
+    )
 
 
 def test_an_empty_checklist_marks_every_row_not_configured(spark):
@@ -162,9 +168,93 @@ def test_an_empty_checklist_marks_every_row_not_configured(spark):
     assert row["checklist_status"] == "NOT_CONFIGURED"
     assert row["decision"] == "NOT CONFIGURED"
     assert row["rules_applied"] == ""
+    assert row["features_applied"] == ""
 
 
-def test_a_missing_source_column_names_its_lake_table(spark):
+def test_grant_uses_the_latest_feature_migration(spark, tmp_path):
+    from rules_engine.feature_migrations import load_feature_registry
+
+    paid = """SELECT
+    TIN_NO,
+    cast(sum(TOT_PAYMENT_AMT) as double) AS tax_collected
+FROM lakehouse.payments
+GROUP BY TIN_NO"""
+    _feature_sql(tmp_path / "V001__baseline.sql", paid)
+    _feature_sql(tmp_path / "V002__tax_collected_plus_one.sql", paid.replace(
+        "cast(sum(TOT_PAYMENT_AMT) as double)",
+        "cast(sum(TOT_PAYMENT_AMT) as double) + 1.0",
+    ))
+    features = load_feature_registry(tmp_path)
+    assert features.require("tax_collected").version == 2
+    assert features.history("tax_collected")[0].status.value == "DEPRECATED"
+    engine = RulesEngine(
+        build_registry(
+            (
+                release(
+                    RuleDefinition(
+                        rule_code="MIN_TAX_COLLECTED",
+                        title="Tax collected",
+                        description="Tax collected",
+                        feature_name="tax_collected",
+                        operator=RuleOperator.GTE,
+                        expected_value=0,
+                    ),
+                    effective_from=CATALOG_START,
+                ),
+            ),
+            features,
+        )
+    )
+    payments = spark.createDataFrame([("T1", 10.0)], schema="TIN_NO string, TOT_PAYMENT_AMT double")
+    features.register_sources(spark, {"payments": payments})
+    frame = spark.createDataFrame([("T1",)], schema="TIN_NO string")
+    row = engine.evaluate_frame(frame, DAY).collect()[0]
+    assert row["tax_collected"] == 11.0
+    assert row["features_applied"] == "tax_collected:v2"
+
+
+def _feature_sql(path, expression: str) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "-- feature: tax_collected",
+                "-- description: Total tax paid",
+                "-- dtype: number",
+                "-- source: payments",
+                "-- missing: 0, no payments on record",
+                expression,
+                "",
+            ]
+        )
+    )
+
+
+def test_a_missing_source_table_names_the_lake_view(spark):
+    for name in ("reg", "ledger", "payments", "returns", "customs", "efris", "sector"):
+        spark.catalog.dropTempView(f"lakehouse_{name}")
     frame = spark.createDataFrame([("T1", "REGD")], schema="TIN_NO string, REG_STATUS string")
-    with pytest.raises(ValueError, match=r"total_tax_collected \(from payments\)"):
+    with pytest.raises(ValueError, match="lakehouse.payments"):
         RulesEngine(build_registry(CHECKLIST)).evaluate_frame(frame, DAY)
+
+
+def _register_sources(spark, rows):
+    from rules_engine.feature_computations import FEATURES
+
+    def frame(data, schema):
+        return spark.createDataFrame(data, schema=schema)
+
+    reg = [(tin, status, life) for tin, status, life, *_rest in rows]
+    payments = [(tin, tax) for tin, _status, _life, _owed, _filed, tax, _red in rows if tax is not None]
+    ledger = [(tin, owed) for tin, _status, _life, owed, _filed, _tax, _red in rows if owed is not None]
+    returns = [(tin,) for tin, _status, _life, _owed, filed, _tax, _red in rows if filed]
+    customs = [(tin, red) for tin, _status, _life, _owed, _filed, _tax, red in rows if red is not None]
+    FEATURES.register_sources(
+        spark,
+        {
+            "reg": frame(reg, "TIN_NO string, REG_STATUS string, taxpayer_status string"),
+            "payments": frame(payments, "TIN_NO string, TOT_PAYMENT_AMT double"),
+            "ledger": frame(ledger, "TPIN string, OUTSTANDING_LIABILITY double"),
+            "returns": frame(returns, "TAXPAYER_TIN string"),
+            "customs": frame(customs, "taxpayer_tin string, is_red_flg double"),
+        },
+    )

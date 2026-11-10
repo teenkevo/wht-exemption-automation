@@ -4,6 +4,7 @@ src/data_engineering/__init__.py
 src/data_engineering/config.py
 src/data_engineering/ingest.py
 src/data_engineering/load.py
+src/data_engineering/mock_lake.py
 src/data_engineering/preprocess.py
 src/data_engineering/source.py
 src/data_engineering/spark.py
@@ -30,10 +31,11 @@ src/rules_engine/db/postgres_registry.py
 src/rules_engine/db/schema.sql
 src/rules_engine/feature_computations/__init__.py
 src/rules_engine/feature_computations/base.py
-src/rules_engine/feature_computations/filing_compliance.py
-src/rules_engine/feature_computations/payment_compliance.py
-src/rules_engine/feature_computations/registration_compliance.py
-src/rules_engine/feature_computations/trade_compliance.py
+src/rules_engine/feature_migrations/V001__baseline.sql
+src/rules_engine/feature_migrations/__init__.py
+src/rules_engine/migrations/V001__baseline.yaml
+src/rules_engine/migrations/V002__raise_min_tax.yaml
+src/rules_engine/migrations/__init__.py
 src/training/__init__.py
 src/training/evaluate.py
 src/training/train.py

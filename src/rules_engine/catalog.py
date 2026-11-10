@@ -8,7 +8,7 @@ creates the schema and leaves it empty. Rules are registered with the rules CLI
 or a one-off script installs a checklist of its own.
 
 A requirement that needs data no feature provides starts with a feature in
-``rules_engine/feature_computations/``.
+``rules_engine/feature_migrations/``.
 """
 
 from __future__ import annotations

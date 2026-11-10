@@ -52,9 +52,11 @@ def rule_input_columns() -> set[str]:
     """Joined-table columns read by any rule version in the catalog, past or present."""
     from rules_engine.catalog import default_registry
 
+    from rules_engine.feature_computations import FEATURES
+
     registry = default_registry()
     features = {rule.feature_name for code in registry.codes() for rule in registry.history(code)}
-    return registry.features.source_columns(features) | features
+    return registry.features.source_columns(features) | features | set(FEATURES.names())
 
 
 def with_label(

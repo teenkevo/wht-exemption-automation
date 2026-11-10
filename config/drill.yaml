@@ -1,0 +1,9 @@
+# Drill JDBC connection for the lake machine.
+# Remote mode uses this when WHT_LAKE_ROOT is empty.
+# DRILL_URL, DRILL_USER, DRILL_JDBC_JAR, and DRILL_PASSWORD replace these values.
+# The password is read only from DRILL_PASSWORD.
+url: jdbc:drill:drillbit=uradfnode3.ura.go.ug:31010;auth=plain
+driver: org.apache.drill.jdbc.Driver
+storage: dfs.root
+jar: drivers/drill-jdbc-all-1.22.0.jar
+fetch_size: 10000

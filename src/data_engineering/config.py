@@ -21,6 +21,42 @@ SOURCE_NAMES = (
     "returns",
 )
 
+# Prefix of every path in remote_sources. WHT_LAKE_ROOT replaces it for a local lake.
+LAKE_PREFIX = "/data/lakehouse"
+
+
+def lake_relative(path: str) -> str:
+    """The part of a remote source path that follows ``/data/lakehouse``."""
+    posix = Path(path).as_posix().rstrip("/")
+    prefix = LAKE_PREFIX.rstrip("/")
+    if not posix.startswith(prefix + "/"):
+        raise ValueError(f"{posix} is outside {prefix}")
+    return posix[len(prefix) + 1 :]
+
+
+def _drill_file() -> dict:
+    from data_engineering import REPO_ROOT
+
+    if not (REPO_ROOT / "config" / "drill.yaml").exists():
+        return {}
+    loaded = load_yaml("drill.yaml")
+    if "password" in loaded:
+        raise ValueError("config/drill.yaml must not contain a password. Set DRILL_PASSWORD")
+    return loaded
+
+
+def _lake_access(configured: object) -> str:
+    """``file`` reads Delta. ``drill`` reads the same paths through Drill JDBC.
+
+    A local mock lake forces ``file``. ``WHT_LAKE_ACCESS`` overrides the file.
+    """
+    if os.getenv("WHT_LAKE_ROOT", "").strip():
+        return "file"
+    choice = (os.getenv("WHT_LAKE_ACCESS") or str(configured or "file")).strip().lower()
+    if choice not in {"file", "drill"}:
+        raise ValueError("lake_access must be file or drill")
+    return choice
+
 
 def _source_paths(raw: object) -> dict[str, Path]:
     if not isinstance(raw, dict):
@@ -34,7 +70,12 @@ def _source_paths(raw: object) -> dict[str, Path]:
         if unknown:
             details.append("unknown " + ", ".join(unknown))
         raise ValueError("WHT sources: " + "; ".join(details))
-    return {name: resolve_path(str(raw[name])) for name in SOURCE_NAMES}
+    paths = {name: resolve_path(str(raw[name])) for name in SOURCE_NAMES}
+    root = os.getenv("WHT_LAKE_ROOT", "").strip()
+    if not root:
+        return paths
+    base = resolve_path(root)
+    return {name: base / lake_relative(path.as_posix()) for name, path in paths.items()}
 
 
 @dataclass(frozen=True)
@@ -44,6 +85,14 @@ class ProjectConfig:
     mode: str
     source_format: str
     lake_format: str
+    lake_access: str
+    drill_url: str
+    drill_driver: str
+    drill_storage: str
+    drill_jar: Path | None
+    drill_user: str
+    drill_password: str
+    drill_fetch_size: int
     dedupe_sector: bool
     source_paths: dict[str, Path]
     cycle: Cycle
@@ -102,6 +151,10 @@ class ProjectConfig:
         if mode not in {"local", "remote"}:
             raise ValueError("WHT_MODE must be local or remote")
         # Remote reads the seven lake tables. Local skips them and reads the saved join.
+        # A mock root forces Delta files. Otherwise lake_access chooses Drill or Delta.
+        access = _lake_access(data.get("lake_access", "file")) if mode == "remote" else "file"
+        drill = _drill_file()
+        jar_value = (os.getenv("DRILL_JDBC_JAR") or str(drill.get("jar") or "")).strip()
         source_paths = _source_paths(data.get("remote_sources") or {}) if mode == "remote" else {}
         taxpayers = paths.get("taxpayers") or paths.get("source") or "data/delta/wht_base_v1"
         return cls(
@@ -110,6 +163,14 @@ class ProjectConfig:
             mode=mode,
             source_format=str(data.get("source_format", "parquet")),
             lake_format=str(data.get("lake_format", "delta")),
+            lake_access=access,
+            drill_url=os.getenv("DRILL_URL") or str(drill.get("url") or ""),
+            drill_driver=str(drill.get("driver") or "org.apache.drill.jdbc.Driver"),
+            drill_storage=str(drill.get("storage") or "dfs.root"),
+            drill_jar=resolve_path(jar_value) if jar_value else None,
+            drill_user=os.getenv("DRILL_USER") or str(drill.get("user") or ""),
+            drill_password=os.getenv("DRILL_PASSWORD") or "",
+            drill_fetch_size=int(drill.get("fetch_size", 10000)),
             dedupe_sector=bool(load.get("dedupe_sector", True)),
             source_paths=source_paths,
             cycle=cycle,

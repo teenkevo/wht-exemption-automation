@@ -250,6 +250,7 @@ def add_label(
     day = assessment_date or run_date()
     codes = codes_in_force(engine.registry, day, tuple(rule_codes or DEFAULT_RULES))
     judged = engine.evaluate_frame(df, day, codes)
+    feature_names = list(dict.fromkeys(rule.feature_name for rule in engine.rules_for(day, codes))) if codes else []
     flags = {
         flag: F.when(F.col(outcome_column_name(code)) == "PASS", F.lit(1)).otherwise(F.lit(0))
         for flag, code in AUDIT_FLAGS.items()
@@ -257,7 +258,8 @@ def add_label(
     }
     eligible = F.when(F.col("checklist_status") == "PASS", F.lit(1.0)).otherwise(F.lit(0.0))
     return judged.select(
-        *[F.col(name) for name in df.columns],
+        *[F.col(name) for name in df.columns if name not in feature_names],
+        *[F.col(name) for name in feature_names],
         eligible.alias("wht_eligible"),
         *[column.alias(flag) for flag, column in flags.items()],
     )
@@ -272,6 +274,10 @@ def assemble(
     rule_codes=None,
 ) -> DataFrame:
     """Join the seven sources and attach the checklist label."""
+    from rules_engine.feature_computations import FEATURES
+
+    if src:
+        FEATURES.register_sources(next(iter(src.values())).sparkSession, src)
     return add_label(
         build_base(src, dedupe_sector=dedupe_sector),
         engine=engine,

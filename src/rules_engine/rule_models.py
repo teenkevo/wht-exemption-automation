@@ -103,6 +103,7 @@ class RuleResult(BaseModel):
     mandatory: bool
 
     feature_name: str
+    feature_version: int | None = None
     source_table: str | None = None
     operator: RuleOperator
     actual_value: Any = None

@@ -238,8 +238,7 @@ def test_inactive_features_cannot_back_a_rule():
             description=template.description,
             dtype=FeatureType.NUMBER,
             source_table=template.source_table,
-            columns=template.columns,
-            compute=template.compute,
+            sql=template.sql,
             missing=template.missing,
             status=FeatureStatus.DEPRECATED,
         )

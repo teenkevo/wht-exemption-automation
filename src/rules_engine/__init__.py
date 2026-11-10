@@ -1,6 +1,7 @@
 """Deterministic WHT checklist: rule definitions, their registry, and the engine that applies them.
 
-- ``feature_computations``: the features a rule can name, and how each one is computed
+- ``feature_computations``: the features a rule can name
+- ``feature_migrations``: the SELECT for each feature, latest migration active
 - ``rule_models``: what a rule, a result, and an audit event look like
 - ``validators``: rule checks before activation, and PASS/FAIL/REVIEW evaluation
 - ``registry``: register, version, activate, supersede, and retire rules

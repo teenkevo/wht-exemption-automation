@@ -1,7 +1,8 @@
 """Read the grant table written by the batch job.
 
-Each row records the outcome of every rule and the rule versions used
-(``rules_applied``). The lookup rebuilds each check's evidence from those
+Each row records the outcome of every rule, the rule versions used
+(``rules_applied``), and the feature versions those rules ran
+(``features_applied``). The lookup rebuilds each check's evidence from those
 versions in the catalog. The optional score is the ranker similarity score and
 does not change the decision.
 """
@@ -15,7 +16,13 @@ import pyarrow.dataset as ds
 
 from data_engineering.config import ProjectConfig
 from rules_engine.catalog import default_engine
-from rules_engine.engine import RulesEngine, checklist_status, outcome_column_name, parse_rules_applied
+from rules_engine.engine import (
+    RulesEngine,
+    checklist_status,
+    outcome_column_name,
+    parse_features_applied,
+    parse_rules_applied,
+)
 from rules_engine.rule_models import DECISIONS, Outcome
 
 SCORE_NOTE = (
@@ -115,6 +122,7 @@ class GrantService:
     def present(self, row: dict) -> dict:
         """Rebuild the checklist for one stored row and check it agrees with the stored decision."""
         rules, results = [], []
+        feature_versions = dict(parse_features_applied(str(row.get("features_applied") or "")))
         for code, version in parse_rules_applied(row["rules_applied"]):
             try:
                 rule = self.engine.registry.get(code, version)
@@ -125,7 +133,11 @@ class GrantService:
                 raise GrantTableInvalid(f"Grant row has no outcome for {code}")
             outcome = Outcome(row[column])
             rules.append(rule)
-            results.append(self.engine.explain(rule, row.get(rule.feature_name), outcome))
+            check = self.engine.explain(rule, row.get(rule.feature_name), outcome)
+            used = feature_versions.get(rule.feature_name)
+            if used is not None:
+                check = check.model_copy(update={"feature_version": used})
+            results.append(check)
         status = checklist_status(rules, [item.outcome for item in results])
         if status.value != row["checklist_status"] or DECISIONS[status] != row["decision"]:
             raise GrantTableInvalid("Grant row decision does not match its rule outcomes")

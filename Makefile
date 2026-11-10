@@ -1,4 +1,4 @@
-.PHONY: install test serve ingest features materialize grant train score feast-ui redis-up redis-down rules-db-up rules-db-down rules-db-init rules rules-migrate
+.PHONY: install test serve ingest features materialize grant train score feast-ui redis-up redis-down rules-db-up rules-db-down rules-db-init rules rules-migrate mock-lake mock-lake-rm drill-check
 
 export PYTHONPATH := src:.
 
@@ -57,3 +57,12 @@ train:
 
 score:
 	@python -m inference.batch_score
+
+mock-lake:
+	@python -m data_engineering.mock_lake
+
+mock-lake-rm:
+	@rm -rf mock_lake
+
+drill-check:
+	@python -m data_engineering.drill

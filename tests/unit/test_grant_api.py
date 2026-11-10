@@ -8,7 +8,7 @@ from api.dependencies import get_grant_service
 from api.main import create_app
 from api.services.grant_service import GrantService, GrantTableInvalid
 from rules_engine import RuleDefinition, RuleOperator, RuleRegistry, RulesEngine
-from rules_engine.engine import outcome_column_name, rules_applied_text
+from rules_engine.engine import features_applied_text, outcome_column_name, rules_applied_text
 from rules_engine.feature_computations import FEATURES
 
 DAY = date(2026, 11, 7)
@@ -52,6 +52,7 @@ def _grant_row(tin: str, features: dict, engine: RulesEngine) -> dict:
         cycle="wht_2026_27_h1",
         assessment_date=DAY.isoformat(),
         rules_applied=rules_applied_text(engine.rules_for(DAY)),
+        features_applied=features_applied_text(engine.rules_for(DAY), engine.registry.features),
     )
     return row
 
@@ -72,6 +73,7 @@ def test_grant_lookup_explains_each_rule(tmp_path):
         _grant_row("DEMO-TIN-0001", PASSING, engine),
         _grant_row("DEMO-TIN-0002", {**PASSING, "tax_collected": 10.0, "registration_status": None}, engine),
     ]
+    rows[1]["features_applied"] = "registration_status:v1,tax_collected:v2"
     pd.DataFrame(rows).to_parquet(path)
     service = GrantService.load(path)
     service.engine = engine
@@ -99,6 +101,7 @@ def test_grant_lookup_explains_each_rule(tmp_path):
     assert collected["expected_value"] == 100_000_000
     assert collected["operator"] == "gte"
     assert collected["version"] == 1
+    assert collected["feature_version"] == 2
     assert collected["source_table"] == "payments"
 
     assert client.post("/grant", json={"tin": "DEMO-TIN-9999"}).status_code == 404

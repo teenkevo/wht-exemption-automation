@@ -49,7 +49,9 @@ def spark_session(
         try:
             from delta import configure_spark_with_delta_pip
         except ImportError as exc:
-            raise RuntimeError("Install the spark extra so Delta tables can be read and written") from exc
+            raise RuntimeError(
+                "Install the delta extra (pip install -e '.[delta]') so Delta tables can be read and written"
+            ) from exc
         builder = configure_spark_with_delta_pip(builder)
     for key, value in (configs or {}).items():
         builder = builder.config(key, value)
@@ -58,10 +60,15 @@ def spark_session(
     return builder.getOrCreate()
 
 
-def job_session(app_name: str, *, delta: bool = False):
+def job_session(app_name: str, *, delta: bool = False, jars: tuple[str, ...] = ()):
     """Session using config/spark_config.yaml."""
     from data_engineering import load_yaml
 
     raw = load_yaml("spark_config.yaml").get("configs") or {}
     configs = {str(key): str(value) for key, value in raw.items()}
+    if jars:
+        configs["spark.jars"] = ",".join(jars)
+        classpath = os.pathsep.join(jars)
+        configs["spark.driver.extraClassPath"] = classpath
+        configs["spark.executor.extraClassPath"] = classpath
     return spark_session(app_name, delta=delta, configs=configs)

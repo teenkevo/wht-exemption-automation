@@ -21,6 +21,7 @@ CHECKLIST_COLUMNS = (
     "cycle",
     "assessment_date",
     "rules_applied",
+    "features_applied",
 )
 
 
@@ -52,7 +53,7 @@ def apply_grant(
 
 def summarize_grant(df: DataFrame, rule_codes) -> dict:
     """Counts only. The summary is safe to log and to commit to a dashboard."""
-    header = df.select("cycle", "assessment_date", "rules_applied").limit(1).collect()
+    header = df.select("cycle", "assessment_date", "rules_applied", "features_applied").limit(1).collect()
     if not header:
         raise ValueError("Grant output is empty")
     aggregations = [
@@ -82,6 +83,7 @@ def summarize_grant(df: DataFrame, rule_codes) -> dict:
         "cycle": str(header[0]["cycle"]),
         "assessment_date": str(header[0]["assessment_date"]),
         "rules_applied": [part for part in str(header[0]["rules_applied"] or "").split(",") if part],
+        "features_applied": [part for part in str(header[0]["features_applied"] or "").split(",") if part],
         "taxpayer_count": taxpayers,
         "eligible": eligible,
         "needs_review": review,
@@ -186,6 +188,9 @@ def main() -> None:
     print()
     note("Rules")
     lines(summary["rules_applied"] or ["none"], color="cyan", indent=4)
+    print()
+    note("Features")
+    lines(summary["features_applied"] or ["none"], color="cyan", indent=4)
     print()
     review = summary["needs_review"]
     fields(

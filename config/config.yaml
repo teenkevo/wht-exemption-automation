@@ -3,8 +3,11 @@ entity_key: TIN_NO
 event_timestamp: event_timestamp
 # Format of the saved joined table. Features, grant, training, and scores read this table.
 source_format: parquet
-# Format of the seven lake tables. Used only when WHT_MODE=remote.
+# Format of the seven lake tables when lake_access is file.
 lake_format: delta
+# file reads Delta at remote_sources. drill reads those paths through config/drill.yaml.
+# WHT_LAKE_ROOT forces file. WHT_LAKE_ACCESS=file|drill overrides this.
+lake_access: drill
 # checklist holds the two halves of one financial year, which starts on 1 July.
 # wht_2026_27_h1 is 1 July to 31 December 2026 (Q1 and Q2).
 # wht_2026_27_h2 is 1 January to 30 June 2027 (Q3 and Q4).
@@ -37,6 +40,7 @@ rules_store:
 load:
   dedupe_sector: true
 # Lake paths for the seven sources. Read only when WHT_MODE=remote.
+# WHT_LAKE_ROOT replaces the /data/lakehouse prefix, for a local mock lake.
 remote_sources:
   reg: /data/lakehouse/dm_modeled/dim_taxpayer_mst
   ledger: /data/lakehouse/dm_modeled/fact_ledger

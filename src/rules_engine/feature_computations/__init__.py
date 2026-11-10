@@ -1,27 +1,19 @@
 """Compliance features the rules engine evaluates.
 
-Each module covers one area and lists its features. A new feature goes in the
-module for its area, or in a new module added to ``_MODULES``.
+Each feature's calculation is a SELECT in ``rules_engine.feature_migrations``.
+The query reads ``lakehouse.<source>`` and returns one row per TIN. The latest
+migration that names a feature is the active one. An earlier migration for
+that name stays on record and is not used.
 """
 
-from rules_engine.feature_computations import (
-    filing_compliance,
-    payment_compliance,
-    registration_compliance,
-    trade_compliance,
-)
 from rules_engine.feature_computations.base import (
     FeatureDefinition,
     FeatureRegistry,
     FeatureStatus,
     FeatureType,
 )
+from rules_engine.feature_migrations import load_feature_registry
 
-_MODULES = (registration_compliance, filing_compliance, payment_compliance, trade_compliance)
-
-FEATURES = FeatureRegistry()
-for _module in _MODULES:
-    for _feature in _module.FEATURES:
-        FEATURES.register(_feature)
+FEATURES = load_feature_registry()
 
 __all__ = ["FEATURES", "FeatureDefinition", "FeatureRegistry", "FeatureStatus", "FeatureType"]

@@ -40,6 +40,30 @@ def rules_applied_text(rules: Sequence[RuleDefinition]) -> str:
     return ",".join(rule.key for rule in rules)
 
 
+def features_applied_text(rules: Sequence[RuleDefinition], features) -> str:
+    """``name:vN`` for each feature the rules use, in rule order. The latest version is the one that ran."""
+    parts: list[str] = []
+    seen: set[str] = set()
+    for rule in rules:
+        if rule.feature_name in seen:
+            continue
+        seen.add(rule.feature_name)
+        feature = features.get(rule.feature_name)
+        if feature is not None:
+            parts.append(feature.key)
+    return ",".join(parts)
+
+
+def parse_features_applied(text: str) -> list[tuple[str, int]]:
+    pairs = []
+    for part in (text or "").split(","):
+        if not part:
+            continue
+        name, _, version = part.partition(":v")
+        pairs.append((name, int(version)))
+    return pairs
+
+
 def parse_rules_applied(text: str) -> list[tuple[str, int]]:
     pairs = []
     for part in (text or "").split(","):
@@ -114,6 +138,7 @@ class RulesEngine:
             title=rule.title,
             mandatory=rule.mandatory,
             feature_name=rule.feature_name,
+            feature_version=None if feature is None else feature.version,
             source_table=None if feature is None else feature.source_table,
             operator=rule.operator,
             actual_value=actual,
@@ -128,7 +153,8 @@ class RulesEngine:
 
         Added columns: each rule's feature, ``rule_<code>`` outcomes, ``failed_rules``,
         ``review_rules``, ``rules_failed_count``, ``checklist_status``, ``decision``,
-        ``assessment_date``, and ``rules_applied`` (``CODE:vN`` for every rule used).
+        ``assessment_date``, ``rules_applied`` (``CODE:vN`` for every rule used),
+        and ``features_applied`` (``name:vN`` for every feature those rules used).
         """
         from pyspark.sql import functions as F
 
@@ -142,6 +168,7 @@ class RulesEngine:
                     "checklist_status": F.lit(ChecklistStatus.NOT_CONFIGURED.value),
                     "assessment_date": F.lit(assessment_date.isoformat()),
                     "rules_applied": F.lit(""),
+                    "features_applied": F.lit(""),
                     "decision": F.lit(DECISIONS[ChecklistStatus.NOT_CONFIGURED]),
                 }
             )
@@ -181,6 +208,7 @@ class RulesEngine:
                     "checklist_status": status,
                     "assessment_date": F.lit(assessment_date.isoformat()),
                     "rules_applied": F.lit(rules_applied_text(rules)),
+                    "features_applied": F.lit(features_applied_text(rules, self.registry.features)),
                 }
             )
             .withColumn("decision", decision)
