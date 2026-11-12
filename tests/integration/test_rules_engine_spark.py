@@ -229,6 +229,29 @@ def _feature_sql(path, expression: str) -> None:
     )
 
 
+def test_joined_columns_supply_features_without_lake_views(spark):
+    for name in ("reg", "ledger", "payments", "returns", "customs", "efris", "sector"):
+        spark.catalog.dropTempView(f"lakehouse_{name}")
+    rows = [
+        ("T1", "REGD", "Existing Taxpayer", 0.0, 3.0, 150_000_000.0),
+        ("T2", None, "Existing Taxpayer", None, None, None),
+    ]
+    schema = (
+        "TIN_NO string, REG_STATUS string, taxpayer_status string, "
+        "total_outstanding_liability double, total_returns_count double, total_tax_collected double"
+    )
+    frame = spark.createDataFrame(rows, schema=schema)
+    judged = {row["TIN_NO"]: row for row in RulesEngine(build_registry(CHECKLIST)).evaluate_frame(frame, DAY).collect()}
+    assert judged["T1"]["decision"] == "ELIGIBLE"
+    assert judged["T1"]["registration_status"] == "REGD"
+    assert judged["T1"]["tax_collected"] == 150_000_000.0
+    assert judged["T2"]["tax_collected"] == 0.0
+    assert judged["T2"]["outstanding_liability"] == 0.0
+    assert judged["T2"]["returns_filed_count"] == 0.0
+    assert judged["T2"]["checklist_status"] == "FAIL"
+    assert judged["T2"]["review_rules"] == "REGISTERED"
+
+
 def test_a_missing_source_table_names_the_lake_view(spark):
     for name in ("reg", "ledger", "payments", "returns", "customs", "efris", "sector"):
         spark.catalog.dropTempView(f"lakehouse_{name}")

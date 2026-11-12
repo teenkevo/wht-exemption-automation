@@ -28,6 +28,22 @@ class FeatureType(str, Enum):
     BOOLEAN = "boolean"
 
 
+# The joined taxpayer table already stores these feature values. Local grant
+# reads that table and has no lake views, so these columns stand in for the SQL.
+_JOINED_COLUMNS = {
+    "registration_status": "REG_STATUS",
+    "returns_filed_count": "total_returns_count",
+    "declared_tax_total": "total_declared_tax",
+    "tax_collected": "total_tax_collected",
+    "payments_count": "number_of_payments",
+    "outstanding_liability": "total_outstanding_liability",
+    "waiver_received": "total_waiver_received",
+    "efris_sales_total": "total_efris_sales",
+    "efris_invoice_count": "vat_invoice_count",
+    "customs_red_lane_count": "red_lane_count",
+}
+
+
 @dataclass(frozen=True)
 class FeatureDefinition:
     """One version of one computed compliance feature.
@@ -124,11 +140,19 @@ class FeatureRegistry:
         """Run each feature's SELECT and left-join it onto the taxpayer rows.
 
         A TIN the query does not return is filled from ``missing``. When the
-        lake view is not in this session and the feature column is already on
-        ``df``, that stored value is kept.
+        lake view is not in this session, a feature column already on ``df``
+        is kept. Otherwise the same value is taken from the joined taxpayer
+        table (``REG_STATUS``, ``total_tax_collected``, and the rest).
         """
         wanted = list(dict.fromkeys(names))
         spark = df.sparkSession
+        for name in wanted:
+            feature = self.require(name)
+            if name in df.columns or spark.catalog.tableExists(f"lakehouse_{feature.source_table}"):
+                continue
+            stored = _joined_value(df, feature)
+            if stored is not None:
+                df = df.withColumn(name, stored)
         missing_views = sorted(
             {
                 f"lakehouse.{feature.source_table}"
@@ -160,6 +184,24 @@ class FeatureRegistry:
             if feature.fills_absent_with_zero:
                 df = df.withColumn(feature.name, F.coalesce(F.col(feature.name).cast("double"), F.lit(0.0)))
         return df
+
+
+def _joined_value(df: DataFrame, feature: FeatureDefinition):
+    """The feature as already stored on the joined taxpayer table, if that column is present."""
+    if feature.name == "business_age_years" and "BUSINESS_START_DT" in df.columns:
+        start = F.col("BUSINESS_START_DT").cast("date")
+        age = F.months_between(F.current_date(), start) / F.lit(12.0)
+        return F.when(start.isNull(), F.lit(None).cast("double")).otherwise(F.greatest(age, F.lit(0.0)))
+    column = _JOINED_COLUMNS.get(feature.name)
+    if column is None or column not in df.columns:
+        return None
+    value = F.col(column)
+    if feature.dtype == FeatureType.TEXT:
+        return value.cast("string")
+    value = value.cast("double")
+    if feature.fills_absent_with_zero:
+        value = F.coalesce(value, F.lit(0.0))
+    return value
 
 
 def _lake_views(sql: str) -> str:
